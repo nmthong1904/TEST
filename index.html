@@ -10187,7 +10187,7 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
       background:#1d1d1d; border-radius:8px; padding:8px 10px;
       margin-bottom:5px; font-size:14px;
     }
-    .t-ok { color:#81c995; } .t-warn { color:#fdd663; } .t-err { color:#f28b82; }
+    .t-load { color:#aaa; } .t-ok { color:#81c995; } .t-warn { color:#fdd663; } .t-err { color:#f28b82; }
   </style>
 </head>
 <body>
@@ -10327,70 +10327,93 @@ function extractMsnv(text) {
   return /^[\w\-.]{1,30}$/.test(text) ? text : '';
 }
 
+const pending = {};          // MSNV đang chờ máy chủ trả lời
+let overlayTimer = null;
+const SCAN_PAUSE = 900;      // ms: chỉ tạm dừng quét ngắn, KHÔNG chờ máy chủ
+
+// Hiện thông báo phủ trên camera trong ms mili-giây rồi tự tắt
+function flash(type, icon, name, meta, msg, ms) {
+  showOverlay(type, icon, name, meta, msg);
+  clearTimeout(overlayTimer);
+  overlayTimer = setTimeout(function () {
+    document.getElementById('overlay').style.display = 'none';
+  }, ms);
+}
+
 function handleCode(text) {
   const msnv = extractMsnv(text);
   if (!msnv) {
     const t = Date.now();
     if (text === lastCode && t - lastTime < SAME_CODE_COOLDOWN) return;
-    lastCode = text; lastTime = t; busy = true;
-    showOverlay('err', '✕', 'Mã QR không hợp lệ', String(text).slice(0, 60), 'Không phải mã suất ăn');
+    lastCode = text; lastTime = t;
+    busy = true;
+    setTimeout(function () { busy = false; }, SCAN_PAUSE);
+    flash('err', '✕', 'Mã QR không hợp lệ', String(text).slice(0, 60), 'Không phải mã suất ăn', 1800);
     beep('err');
-    setTimeout(function () {
-      document.getElementById('overlay').style.display = 'none';
-      busy = false;
-    }, 1800);
     return;
   }
 
   const now = Date.now();
+  if (pending[msnv]) return;
   if (msnv === lastCode && now - lastTime < SAME_CODE_COOLDOWN) return;
   lastCode = msnv;
   lastTime = now;
 
+  // Quét xong là cho người kế tiếp vào ngay, kết quả sẽ hiện khi máy chủ trả lời
   busy = true;
-  showOverlay('load', '⏳', 'Đang ghi nhận...', msnv, '');
+  setTimeout(function () { busy = false; }, SCAN_PAUSE);
+  flash('load', '⏳', 'Đã đọc mã', msnv, 'Đang ghi nhận...', SCAN_PAUSE);
+  beepScan();
+
+  const li = addHistory('load', msnv, msnv, '');
+  pending[msnv] = true;
+  const started = Date.now();
 
   const ctrl = new AbortController();
-  const timer = setTimeout(function () { ctrl.abort(); }, 20000);
+  const timer = setTimeout(function () { ctrl.abort(); }, 25000);
 
   fetch(API_URL + '?action=record&msnv=' + encodeURIComponent(msnv), { signal: ctrl.signal })
     .then(function (r) { return r.json(); })
-    .then(function (res) { clearTimeout(timer); onResult(msnv, res); })
+    .then(function (res) {
+      clearTimeout(timer); delete pending[msnv];
+      onResult(msnv, res, li, Date.now() - started);
+    })
     .catch(function (err) {
-      clearTimeout(timer);
-      onResult(msnv, { ok: false, message: 'Lỗi kết nối: ' + (err && err.message ? err.message : err) });
+      clearTimeout(timer); delete pending[msnv];
+      onResult(msnv, { ok: false, message: 'Lỗi kết nối: ' + (err && err.message ? err.message : err) },
+        li, Date.now() - started);
     });
 }
 
-function onResult(msnv, res) {
+function onResult(msnv, res, li, ms) {
   const emp = res.employee;
   const name = emp ? emp.hoTen : msnv;
   const meta = emp ? (emp.msnv + ' • ' + emp.donVi) : '';
   let type, icon, text, delay;
 
   if (res.ok) {
-    type = 'ok'; icon = '✓'; text = res.message; delay = 1300;
+    type = 'ok'; icon = '✓'; text = res.message; delay = 1100;
     okCount++;
     document.getElementById('count').textContent = okCount;
     beep('ok');
   } else if (res.duplicate) {
-    type = 'warn'; icon = '⚠'; text = 'Đã nhận suất ăn lúc ' + res.time; delay = 2200;
+    type = 'warn'; icon = '⚠'; text = 'Đã nhận suất ăn lúc ' + res.time; delay = 2000;
     beep('err');
   } else {
-    type = 'err'; icon = '✕'; text = res.message; delay = 2500;
+    type = 'err'; icon = '✕'; text = res.message; delay = 2200;
     beep('err');
   }
 
-  showOverlay(type, icon, name, meta, text);
+  flash(type, icon, name, meta, text, delay);
   setLast(type, icon, name, emp, msnv, text);
-  addHistory(type, name, msnv, emp ? emp.donVi : '');
-
+  updateHistory(li, type, name, msnv, emp ? emp.donVi : '', ms);
   lastTime = Date.now();
-  setTimeout(function () {
-    document.getElementById('overlay').style.display = 'none';
-    busy = false; // tiếp tục quét người kế tiếp
-  }, delay);
 }
+
+// Gọi nhẹ lên máy chủ định kỳ để Apps Script không bị "nguội" (khởi động lại rất chậm)
+function ping() { fetch(API_URL + '?action=ping').catch(function () {}); }
+ping();
+setInterval(ping, 4 * 60 * 1000);
 
 // ---------- Giao diện ----------
 function showOverlay(type, icon, name, meta, msg) {
@@ -10416,14 +10439,38 @@ function setLast(type, icon, name, emp, msnv, text) {
 
 function addHistory(type, name, msnv, unit) {
   const li = document.createElement('li');
-  const time = new Date().toLocaleTimeString('vi-VN');
-  const label = type === 'ok' ? '✓ Đã ghi nhận' : (type === 'warn' ? '⚠ Trùng' : '✕ Lỗi');
-  li.innerHTML = '<span></span><span class="t-' + type + '"></span>';
-  li.children[0].textContent = name + ' (' + msnv + (unit ? ' - ' + unit : '') + ') • ' + time;
-  li.children[1].textContent = label;
+  li.innerHTML = '<span></span><span></span>';
   const ul = document.getElementById('history');
   ul.insertBefore(li, ul.firstChild);
   while (ul.children.length > 8) ul.removeChild(ul.lastChild);
+  fillHistory(li, type, name, msnv, unit, null);
+  return li;
+}
+
+function updateHistory(li, type, name, msnv, unit, ms) {
+  fillHistory(li, type, name, msnv, unit, ms);
+}
+
+function fillHistory(li, type, name, msnv, unit, ms) {
+  const time = li.dataset.time || (li.dataset.time = new Date().toLocaleTimeString('vi-VN'));
+  const labels = { load: '⏳ Đang ghi nhận...', ok: '✓ Đã ghi nhận', warn: '⚠ Trùng', err: '✕ Lỗi' };
+  li.children[0].textContent = name + ' (' + msnv + (unit ? ' - ' + unit : '') + ') • ' + time;
+  li.children[1].textContent = labels[type] + (ms != null ? ' (' + (ms / 1000).toFixed(1) + 's)' : '');
+  li.children[1].className = 't-' + type;
+}
+
+// Tiếng "tít" ngắn ngay khi đọc được mã (chưa cần chờ máy chủ)
+function beepScan() {
+  try {
+    if (!audioCtx) return;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.frequency.value = 1400;
+    gain.gain.value = 0.12;
+    osc.connect(gain); gain.connect(audioCtx.destination);
+    osc.start();
+    osc.stop(audioCtx.currentTime + 0.06);
+  } catch (e) {}
 }
 
 function beep(kind) {
