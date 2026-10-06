@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js"></script>
+  <style>
+    * { box-sizing:border-box; }
+    body {
+      font-family: Arial, sans-serif;
+      background:#111;
+      color:#fff;
+      margin:0;
+      padding:12px;
+    }
+    .wrap { max-width:480px; margin:0 auto; }
+    .top {
+      display:flex; justify-content:space-between; align-items:center;
+      margin-bottom:10px;
+    }
+    .top h1 { font-size:18px; margin:0; }
+    .counter {
+      background:#1a73e8; border-radius:20px; padding:6px 14px;
+      font-weight:bold; font-size:15px;
+    }
+    .cam {
+      position:relative; width:100%; aspect-ratio:1/1;
+      background:#000; border-radius:16px; overflow:hidden;
+    }
+    video { width:100%; height:100%; object-fit:cover; }
+    .frame {
+      position:absolute; inset:18%;
+      border:3px solid rgba(255,255,255,.8); border-radius:14px;
+      pointer-events:none;
+    }
+    #startBox {
+      position:absolute; inset:0; display:flex; flex-direction:column;
+      align-items:center; justify-content:center; background:#000; padding:20px;
+      text-align:center; gap:14px;
+    }
+    button {
+      border:0; border-radius:12px; background:#1a73e8; color:#fff;
+      font-size:18px; padding:16px 28px; cursor:pointer;
+    }
+    #startErr { color:#ff8a80; font-size:14px; }
+    #overlay {
+      position:absolute; inset:0; display:none; flex-direction:column;
+      align-items:center; justify-content:center; text-align:center;
+      padding:16px;
+    }
+    #overlay.ok   { background:rgba(24,128,56,.96); }
+    #overlay.warn { background:rgba(227,160,8,.96); }
+    #overlay.err  { background:rgba(217,48,37,.96); }
+    #overlay.load { background:rgba(40,40,40,.92); }
+    .icon { font-size:64px; line-height:1; }
+    .name { font-size:26px; font-weight:bold; margin-top:10px; }
+    .meta { font-size:16px; margin-top:6px; opacity:.95; }
+    .msg  { font-size:16px; margin-top:12px; font-weight:bold; }
+    .last {
+      margin-top:12px; border-radius:14px; padding:14px 16px;
+      background:#1d1d1d; border-left:8px solid #555; text-align:left;
+    }
+    .last.ok   { border-left-color:#34a853; background:#12261a; }
+    .last.warn { border-left-color:#fbbc04; background:#2b2410; }
+    .last.err  { border-left-color:#ea4335; background:#2b1412; }
+    .last .l-title { font-size:12px; color:#aaa; letter-spacing:.5px; }
+    .last .l-name  { font-size:22px; font-weight:bold; margin:4px 0; }
+    .last .l-info  { font-size:15px; color:#ddd; }
+    .last .l-status { font-size:15px; font-weight:bold; margin-top:8px; }
+    .last.ok .l-status   { color:#81c995; }
+    .last.warn .l-status { color:#fdd663; }
+    .last.err .l-status  { color:#f28b82; }
+    h3 { font-size:14px; margin:16px 0 6px; color:#aaa; }
+    #history { list-style:none; margin:0; padding:0; }
+    #history li {
+      display:flex; justify-content:space-between; gap:8px;
+      background:#1d1d1d; border-radius:8px; padding:8px 10px;
+      margin-bottom:5px; font-size:14px;
+    }
+    .t-ok { color:#81c995; } .t-warn { color:#fdd663; } .t-err { color:#f28b82; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <h1>🍚 QUÉT SUẤT ĂN</h1>
+    <div class="counter">Đã nhận: <span id="count">0</span></div>
+  </div>
+
+  <div class="cam">
+    <video id="video" playsinline muted></video>
+    <div class="frame"></div>
+
+    <div id="startBox">
+      <div>Đưa mã QR của nhân viên vào khung để ghi nhận. Quét xong sẽ tự động quét tiếp.</div>
+      <button id="startBtn" onclick="startScan()">▶ BẮT ĐẦU QUÉT</button>
+      <div id="startErr"></div>
+    </div>
+
+    <div id="overlay">
+      <div class="icon" id="oIcon"></div>
+      <div class="name" id="oName"></div>
+      <div class="meta" id="oMeta"></div>
+      <div class="msg" id="oMsg"></div>
+    </div>
+  </div>
+
+  <div id="last" class="last">
+    <div class="l-title">NGƯỜI VỪA QUÉT</div>
+    <div class="l-name" id="lName">Chưa có ai quét</div>
+    <div class="l-info" id="lInfo"></div>
+    <div class="l-status" id="lStatus"></div>
+  </div>
+
+  <h3>LỊCH SỬ QUÉT GẦN ĐÂY</h3>
+  <ul id="history"></ul>
+</div>
+
+<canvas id="canvas" style="display:none"></canvas>
+
+<script>
+// ===== DÁN URL WEB APP (kết thúc bằng /exec) VÀO ĐÂY =====
+const API_URL = 'https://script.google.com/macros/s/AKfycbxuXs5l3KxHqTJGdesk_CBjGrzlQC-4jZk5rVgXbP7czTCX0KoDuIy3tb9ceKMi2mOk/exec';
+// ==========================================================
+
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+let scanning = false;
+let busy = false;
+let lastCode = '';
+let lastTime = 0;
+let okCount = 0;
+let lastTick = 0;
+let audioCtx = null;
+
+const SAME_CODE_COOLDOWN = 4000; // ms: bỏ qua cùng 1 mã quét lặp lại liên tục
+
+// ---------- Camera ----------
+async function startScan() {
+  const err = document.getElementById('startErr');
+  err.textContent = '';
+  try {
+    // Tạo âm thanh (cần thao tác bấm nút của người dùng)
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: false
+    });
+    video.srcObject = stream;
+    await video.play();
+
+    // Giữ màn hình luôn sáng
+    try { if (navigator.wakeLock) await navigator.wakeLock.request('screen'); } catch (e) {}
+
+    document.getElementById('startBox').style.display = 'none';
+    scanning = true;
+    requestAnimationFrame(tick);
+  } catch (e) {
+    err.textContent = 'Không mở được camera: ' + (e && e.message ? e.message : e) +
+      '. Hãy cho phép quyền camera cho trình duyệt, hoặc mở link này trực tiếp bằng Chrome.';
+  }
+}
+
+function tick(ts) {
+  if (!scanning) return;
+  requestAnimationFrame(tick);
+
+  if (busy || ts - lastTick < 120) return; // quét ~8 lần/giây
+  lastTick = ts;
+  if (video.readyState !== video.HAVE_ENOUGH_DATA) return;
+
+  const scale = Math.min(1, 640 / video.videoWidth);
+  canvas.width = Math.round(video.videoWidth * scale);
+  canvas.height = Math.round(video.videoHeight * scale);
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+  const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const code = jsQR(img.data, img.width, img.height, { inversionAttempts: 'dontInvert' });
+  if (code && code.data) handleCode(code.data);
+}
+
+// ---------- Xử lý mã QR ----------
+function extractMsnv(text) {
+  text = String(text || '').trim();
+  try {
+    const m = new URL(text).searchParams.get('msnv');
+    if (m) return m.trim();
+  } catch (e) {}
+  // Nếu QR chỉ chứa MSNV thuần
+  return /^[\w\-.]{1,30}$/.test(text) ? text : '';
+}
+
+function handleCode(text) {
+  const msnv = extractMsnv(text);
+  if (!msnv) return;
+
+  const now = Date.now();
+  if (msnv === lastCode && now - lastTime < SAME_CODE_COOLDOWN) return;
+  lastCode = msnv;
+  lastTime = now;
+
+  busy = true;
+  showOverlay('load', '⏳', 'Đang ghi nhận...', msnv, '');
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(function () { ctrl.abort(); }, 20000);
+
+  fetch(API_URL + '?action=record&msnv=' + encodeURIComponent(msnv), { signal: ctrl.signal })
+    .then(function (r) { return r.json(); })
+    .then(function (res) { clearTimeout(timer); onResult(msnv, res); })
+    .catch(function (err) {
+      clearTimeout(timer);
+      onResult(msnv, { ok: false, message: 'Lỗi kết nối: ' + (err && err.message ? err.message : err) });
+    });
+}
+
+function onResult(msnv, res) {
+  const emp = res.employee;
+  const name = emp ? emp.hoTen : msnv;
+  const meta = emp ? (emp.msnv + ' • ' + emp.donVi) : '';
+  let type, icon, text, delay;
+
+  if (res.ok) {
+    type = 'ok'; icon = '✓'; text = res.message; delay = 1300;
+    okCount++;
+    document.getElementById('count').textContent = okCount;
+    beep('ok');
+  } else if (res.duplicate) {
+    type = 'warn'; icon = '⚠'; text = 'Đã nhận suất ăn lúc ' + res.time; delay = 2200;
+    beep('err');
+  } else {
+    type = 'err'; icon = '✕'; text = res.message; delay = 2500;
+    beep('err');
+  }
+
+  showOverlay(type, icon, name, meta, text);
+  setLast(type, icon, name, emp, msnv, text);
+  addHistory(type, name, msnv, emp ? emp.donVi : '');
+
+  lastTime = Date.now();
+  setTimeout(function () {
+    document.getElementById('overlay').style.display = 'none';
+    busy = false; // tiếp tục quét người kế tiếp
+  }, delay);
+}
+
+// ---------- Giao diện ----------
+function showOverlay(type, icon, name, meta, msg) {
+  const o = document.getElementById('overlay');
+  o.className = type;
+  o.style.display = 'flex';
+  document.getElementById('oIcon').textContent = icon;
+  document.getElementById('oName').textContent = name;
+  document.getElementById('oMeta').textContent = meta;
+  document.getElementById('oMsg').textContent = msg;
+}
+
+// Khung cố định: giữ thông tin người vừa quét cho đến khi có người kế tiếp
+function setLast(type, icon, name, emp, msnv, text) {
+  const box = document.getElementById('last');
+  box.className = 'last ' + type;
+  document.getElementById('lName').textContent = name;
+  document.getElementById('lInfo').textContent = emp
+    ? 'MSNV: ' + emp.msnv + '  •  Đơn vị: ' + emp.donVi + '  •  Quét lúc ' + new Date().toLocaleTimeString('vi-VN')
+    : 'MSNV: ' + msnv + '  •  Quét lúc ' + new Date().toLocaleTimeString('vi-VN');
+  document.getElementById('lStatus').textContent = icon + ' ' + text;
+}
+
+function addHistory(type, name, msnv, unit) {
+  const li = document.createElement('li');
+  const time = new Date().toLocaleTimeString('vi-VN');
+  const label = type === 'ok' ? '✓ Đã ghi nhận' : (type === 'warn' ? '⚠ Trùng' : '✕ Lỗi');
+  li.innerHTML = '<span></span><span class="t-' + type + '"></span>';
+  li.children[0].textContent = name + ' (' + msnv + (unit ? ' - ' + unit : '') + ') • ' + time;
+  li.children[1].textContent = label;
+  const ul = document.getElementById('history');
+  ul.insertBefore(li, ul.firstChild);
+  while (ul.children.length > 8) ul.removeChild(ul.lastChild);
+}
+
+function beep(kind) {
+  try {
+    if (navigator.vibrate) navigator.vibrate(kind === 'ok' ? 80 : [120, 60, 120]);
+    if (!audioCtx) return;
+    const times = kind === 'ok' ? [0] : [0, 0.18];
+    times.forEach(function (t) {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.frequency.value = kind === 'ok' ? 1000 : 330;
+      gain.gain.value = 0.2;
+      osc.connect(gain); gain.connect(audioCtx.destination);
+      osc.start(audioCtx.currentTime + t);
+      osc.stop(audioCtx.currentTime + t + 0.12);
+    });
+  } catch (e) {}
+}
+</script>
+</body>
+</html>
