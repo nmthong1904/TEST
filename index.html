@@ -27,7 +27,14 @@
       position:relative; width:100%; aspect-ratio:1/1;
       background:#000; border-radius:16px; overflow:hidden;
     }
-    video { width:100%; height:100%; object-fit:cover; }
+    video { width:100%; height:100%; object-fit:cover; pointer-events:none; }
+    video::-webkit-media-controls,
+    video::-webkit-media-controls-panel,
+    video::-webkit-media-controls-overlay-play-button,
+    video::-webkit-media-controls-start-playback-button,
+    video::-webkit-media-controls-enclosure {
+      display:none !important; -webkit-appearance:none; opacity:0;
+    }
     .frame {
       position:absolute; inset:18%;
       border:3px solid rgba(255,255,255,.8); border-radius:14px;
@@ -88,7 +95,7 @@
   </div>
 
   <div class="cam">
-    <video id="video" playsinline muted></video>
+    <video id="video" autoplay playsinline webkit-playsinline muted disablepictureinpicture disableremoteplayback controlslist="nodownload nofullscreen noremoteplayback"></video>
     <div class="frame"></div>
 
     <div id="startBox">
@@ -149,8 +156,19 @@ async function startScan() {
       video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
       audio: false
     });
+    video.muted = true;
+    video.setAttribute('playsinline', '');
+    video.setAttribute('webkit-playsinline', '');
     video.srcObject = stream;
     await video.play();
+
+    // iOS hay tự tạm dừng video -> tự phát lại
+    video.addEventListener('pause', function () {
+      if (scanning) video.play().catch(function () {});
+    });
+    document.querySelector('.cam').addEventListener('click', function () {
+      if (video.paused) video.play().catch(function () {});
+    });
 
     // Giữ màn hình luôn sáng
     try { if (navigator.wakeLock) await navigator.wakeLock.request('screen'); } catch (e) {}
@@ -168,6 +186,7 @@ function tick(ts) {
   if (!scanning) return;
   requestAnimationFrame(tick);
 
+  if (video.paused) video.play().catch(function () {});
   if (busy || ts - lastTick < 120) return; // quét ~8 lần/giây
   lastTick = ts;
   if (video.readyState !== video.HAVE_ENOUGH_DATA) return;
