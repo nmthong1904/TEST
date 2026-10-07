@@ -10162,6 +10162,13 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
     #overlay.warn { background:rgba(227,160,8,.96); }
     #overlay.err  { background:rgba(217,48,37,.96); }
     #overlay.load { background:rgba(40,40,40,.92); }
+    #pendingBar, #notice {
+      position:absolute; left:50%; transform:translateX(-50%); display:none; z-index:5;
+      padding:8px 14px; border-radius:20px; font-size:14px; font-weight:bold;
+      pointer-events:none; max-width:90%; text-align:center;
+    }
+    #pendingBar { bottom:12px; background:rgba(26,115,232,.92); color:#fff; }
+    #notice { top:12px; background:rgba(251,188,4,.95); color:#111; }
     .icon { font-size:64px; line-height:1; }
     .name { font-size:26px; font-weight:bold; margin-top:10px; }
     .meta { font-size:16px; margin-top:6px; opacity:.95; }
@@ -10206,6 +10213,9 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
       <button id="startBtn" onclick="startScan()">▶ BẮT ĐẦU QUÉT</button>
       <div id="startErr"></div>
     </div>
+
+    <div id="notice"></div>
+    <div id="pendingBar"></div>
 
     <div id="overlay">
       <div class="icon" id="oIcon"></div>
@@ -10337,7 +10347,25 @@ function vnTime() {
 
 const pending = {};          // MSNV đang chờ máy chủ trả lời
 let overlayTimer = null;
-const SCAN_PAUSE = 900;      // ms: chỉ tạm dừng quét ngắn, KHÔNG chờ máy chủ
+const SCAN_PAUSE = 500;      // ms: chỉ tạm dừng quét ngắn, KHÔNG chờ máy chủ
+
+// Thanh nhỏ ở đáy camera: còn bao nhiêu mã đang chờ máy chủ trả lời (camera vẫn quét bình thường)
+function updatePending() {
+  const n = Object.keys(pending).length;
+  const el = document.getElementById('pendingBar');
+  if (n > 0) { el.textContent = '⏳ Đang ghi nhận ' + n + ' mã...'; el.style.display = 'block'; }
+  else { el.style.display = 'none'; }
+}
+
+// Thông báo nhỏ ở đầu camera (không che hình)
+let noticeTimer = null;
+function notice(text, ms) {
+  const el = document.getElementById('notice');
+  el.textContent = text;
+  el.style.display = 'block';
+  clearTimeout(noticeTimer);
+  noticeTimer = setTimeout(function () { el.style.display = 'none'; }, ms);
+}
 
 // Hiện thông báo phủ trên camera trong ms mili-giây rồi tự tắt
 function flash(type, icon, name, meta, msg, ms) {
@@ -10354,10 +10382,7 @@ function handleCode(text) {
     const t = Date.now();
     if (text === lastCode && t - lastTime < SAME_CODE_COOLDOWN) return;
     lastCode = text; lastTime = t;
-    busy = true;
-    setTimeout(function () { busy = false; }, SCAN_PAUSE);
-    flash('err', '✕', 'Mã QR không hợp lệ', String(text).slice(0, 60), 'Không phải mã suất ăn', 1800);
-    beep('err');
+    notice('⚠ Không phải mã suất ăn của công ty', 2000);
     return;
   }
 
@@ -10370,11 +10395,11 @@ function handleCode(text) {
   // Quét xong là cho người kế tiếp vào ngay, kết quả sẽ hiện khi máy chủ trả lời
   busy = true;
   setTimeout(function () { busy = false; }, SCAN_PAUSE);
-  flash('load', '⏳', 'Đã đọc mã', msnv, 'Đang ghi nhận...', SCAN_PAUSE);
   beepScan();
 
   const li = addHistory('load', msnv, msnv, '');
   pending[msnv] = true;
+  updatePending();
   const started = Date.now();
 
   const ctrl = new AbortController();
@@ -10383,11 +10408,11 @@ function handleCode(text) {
   fetch(API_URL + '?action=record&msnv=' + encodeURIComponent(msnv), { signal: ctrl.signal })
     .then(function (r) { return r.json(); })
     .then(function (res) {
-      clearTimeout(timer); delete pending[msnv];
+      clearTimeout(timer); delete pending[msnv]; updatePending();
       onResult(msnv, res, li, Date.now() - started);
     })
     .catch(function (err) {
-      clearTimeout(timer); delete pending[msnv];
+      clearTimeout(timer); delete pending[msnv]; updatePending();
       onResult(msnv, { ok: false, message: 'Lỗi kết nối: ' + (err && err.message ? err.message : err) },
         li, Date.now() - started);
     });
