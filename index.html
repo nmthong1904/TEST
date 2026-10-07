@@ -10167,7 +10167,13 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
       padding:8px 14px; border-radius:20px; font-size:14px; font-weight:bold;
       pointer-events:none; max-width:90%; text-align:center;
     }
-    #pendingBar { bottom:12px; background:rgba(26,115,232,.92); color:#fff; }
+    /* Thông báo "Đang ghi nhận..." nằm CHÍNH GIỮA camera */
+    #pendingBar {
+      top:50%; bottom:auto; transform:translate(-50%,-50%);
+      font-size:18px; padding:14px 22px; border-radius:16px;
+      background:rgba(26,115,232,.95); color:#fff;
+      box-shadow:0 4px 18px rgba(0,0,0,.45);
+    }
     #notice { top:12px; background:rgba(251,188,4,.95); color:#111; }
     .time { font-size:15px; margin-top:12px; opacity:.97; line-height:1.5; }
     .hint { font-size:12px; margin-top:16px; opacity:.7; }
