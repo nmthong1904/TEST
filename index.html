@@ -10198,10 +10198,40 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
       margin-bottom:5px; font-size:14px;
     }
     .t-load { color:#aaa; } .t-ok { color:#81c995; } .t-warn { color:#fdd663; } .t-err { color:#f28b82; }
+
+    /* ----- Đăng nhập ----- */
+    #loginBox {
+      position:fixed; inset:0; background:#111; display:none;
+      align-items:center; justify-content:center; padding:20px; z-index:50;
+    }
+    .lcard { width:100%; max-width:360px; background:#1d1d1d; border-radius:16px; padding:24px; }
+    .lcard h2 { margin:0 0 4px; font-size:20px; }
+    .lcard p { margin:0 0 16px; color:#aaa; font-size:13px; }
+    .lcard input {
+      width:100%; padding:14px; margin-bottom:12px; border-radius:10px;
+      border:1px solid #444; background:#111; color:#fff; font-size:16px;
+    }
+    .lcard button { width:100%; }
+    #loginErr { color:#ff8a80; font-size:14px; min-height:20px; margin-top:10px; text-align:center; }
+    .userbar { display:flex; justify-content:space-between; align-items:center; font-size:13px; color:#aaa; margin-bottom:8px; }
+    .userbar button { background:#333; font-size:13px; padding:6px 12px; border-radius:8px; }
   </style>
 </head>
 <body>
+<div id="loginBox">
+  <div class="lcard">
+    <h2>🍚 Đăng nhập</h2>
+    <p>Đăng nhập để sử dụng trang quét suất ăn.</p>
+    <input id="lUser" type="text" placeholder="Tài khoản" autocomplete="username" autocapitalize="none" autocorrect="off">
+    <input id="lPass" type="password" placeholder="Mật khẩu" autocomplete="current-password">
+    <button id="lBtn" onclick="doLogin()">ĐĂNG NHẬP</button>
+    <div id="loginErr"></div>
+  </div>
+</div>
+
 <div class="wrap">
+  <div class="userbar"><span id="userName"></span><button onclick="doLogout()">Đăng xuất</button></div>
+
   <div class="top">
     <h1>🍚 QUÉT SUẤT ĂN</h1>
     <div class="counter">Đã nhận: <span id="count">0</span></div>
@@ -10259,8 +10289,94 @@ let lastTime = 0;
 let okCount = 0;
 let lastTick = 0;
 let audioCtx = null;
+let camListenersAdded = false;
 
 const SAME_CODE_COOLDOWN = 4000; // ms: bỏ qua cùng 1 mã quét lặp lại liên tục
+
+// ---------- Đăng nhập ----------
+const AUTH_KEY = 'scan_auth';
+
+function loadAuth() {
+  try {
+    const a = JSON.parse(localStorage.getItem(AUTH_KEY) || 'null');
+    if (a && a.token && a.exp > Date.now()) return a;
+  } catch (e) {}
+  return null;
+}
+
+// Dừng camera và đưa trang về trạng thái chờ
+function stopScan() {
+  scanning = false;
+  busy = false;
+  clearTimeout(holdTimer);
+  blockedCode = '';
+  try {
+    const st = video.srcObject;
+    if (st) st.getTracks().forEach(function (t) { t.stop(); });
+    video.srcObject = null;
+  } catch (e) {}
+  document.getElementById('startBox').style.display = 'flex';
+  document.getElementById('overlay').style.display = 'none';
+  document.getElementById('pendingBar').style.display = 'none';
+}
+
+function applyAuth() {
+  const a = loadAuth();
+  const box = document.getElementById('loginBox');
+  if (a) {
+    box.style.display = 'none';
+    document.getElementById('userName').textContent = '👤 ' + (a.name || a.user);
+  } else {
+    stopScan();
+    document.getElementById('userName').textContent = '';
+    document.getElementById('lPass').value = '';
+    box.style.display = 'flex';
+  }
+}
+
+function doLogin() {
+  const u = document.getElementById('lUser').value.trim();
+  const p = document.getElementById('lPass').value;
+  const err = document.getElementById('loginErr');
+  const btn = document.getElementById('lBtn');
+  err.textContent = '';
+  if (!u || !p) { err.textContent = 'Vui lòng nhập tài khoản và mật khẩu.'; return; }
+  btn.disabled = true; btn.textContent = 'Đang đăng nhập...';
+
+  fetch(API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },   // tránh preflight CORS với Apps Script
+    body: JSON.stringify({ action: 'login', username: u, password: p })
+  })
+    .then(function (r) { return r.json(); })
+    .then(function (res) {
+      if (res && res.ok) {
+        localStorage.setItem(AUTH_KEY, JSON.stringify({
+          token: res.token, user: res.user, name: res.hoTen,
+          exp: Date.now() + (res.expiresIn || 21600) * 1000 - 60000
+        }));
+        applyAuth();
+      } else {
+        err.textContent = (res && res.message) || 'Đăng nhập không thành công.';
+      }
+    })
+    .catch(function (e) { err.textContent = 'Lỗi kết nối: ' + (e && e.message ? e.message : e); })
+    .finally(function () { btn.disabled = false; btn.textContent = 'ĐĂNG NHẬP'; });
+}
+
+function doLogout() {
+  const a = loadAuth();
+  localStorage.removeItem(AUTH_KEY);
+  if (a) {
+    fetch(API_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ action: 'logout', token: a.token }) }).catch(function () {});
+  }
+  applyAuth();
+}
+
+document.addEventListener('keydown', function (e) {
+  if (e.key === 'Enter' && document.getElementById('loginBox').style.display !== 'none') doLogin();
+});
 
 // ---------- Camera ----------
 async function startScan() {
@@ -10281,12 +10397,15 @@ async function startScan() {
     await video.play();
 
     // iOS hay tự tạm dừng video -> tự phát lại
-    video.addEventListener('pause', function () {
-      if (scanning) video.play().catch(function () {});
-    });
-    document.querySelector('.cam').addEventListener('click', function () {
-      if (video.paused) video.play().catch(function () {});
-    });
+    if (!camListenersAdded) {
+      camListenersAdded = true;
+      video.addEventListener('pause', function () {
+        if (scanning) video.play().catch(function () {});
+      });
+      document.querySelector('.cam').addEventListener('click', function () {
+        if (video.paused) video.play().catch(function () {});
+      });
+    }
 
     // Lấy nét liên tục (nếu thiết bị hỗ trợ)
     try {
@@ -10414,6 +10533,9 @@ function handleCode(text) {
   }
   if (busy) return;
 
+  const cur = loadAuth();          // chưa đăng nhập / hết phiên -> yêu cầu đăng nhập lại
+  if (!cur) { applyAuth(); return; }
+
   busy = true;                     // KHÓA: chỉ xử lý một thẻ tại một thời điểm
   currentMsnv = msnv;
   beepScan();
@@ -10426,7 +10548,10 @@ function handleCode(text) {
   const ctrl = new AbortController();
   const timer = setTimeout(function () { ctrl.abort(); }, 25000);
 
-  fetch(API_URL + '?action=record&msnv=' + encodeURIComponent(msnv), { signal: ctrl.signal })
+  // _ = Date.now() và cache:'no-store' để trình duyệt KHÔNG dùng lại kết quả cũ
+  fetch(API_URL + '?action=record&msnv=' + encodeURIComponent(msnv) +
+        '&token=' + encodeURIComponent(cur.token) + '&_=' + Date.now(),
+        { signal: ctrl.signal, cache: 'no-store' })
     .then(function (r) { return r.json(); })
     .then(function (res) {
       clearTimeout(timer); delete pending[msnv]; updatePending();
@@ -10440,6 +10565,15 @@ function handleCode(text) {
 }
 
 function onResult(msnv, res, li, ms) {
+  // Hết phiên đăng nhập -> quay về màn hình đăng nhập
+  if (res && res.auth === false) {
+    localStorage.removeItem(AUTH_KEY);
+    updateHistory(li, 'err', msnv, msnv, '', ms);
+    applyAuth();
+    document.getElementById('loginErr').textContent = res.message || 'Hết phiên đăng nhập.';
+    return;
+  }
+
   const emp = res.employee;
   const name = emp ? emp.hoTen : msnv;
   const meta = emp ? (emp.msnv + ' • ' + emp.donVi) : '';
@@ -10468,7 +10602,7 @@ function onResult(msnv, res, li, ms) {
 }
 
 // Gọi nhẹ lên máy chủ định kỳ để Apps Script không bị "nguội" (khởi động lại rất chậm)
-function ping() { fetch(API_URL + '?action=ping').catch(function () {}); }
+function ping() { fetch(API_URL + '?action=ping&_=' + Date.now(), { cache: 'no-store' }).catch(function () {}); }
 ping();
 setInterval(ping, 4 * 60 * 1000);
 
@@ -10549,6 +10683,9 @@ function beep(kind) {
     });
   } catch (e) {}
 }
+
+// Mở trang: chưa đăng nhập thì hiện màn hình đăng nhập
+applyAuth();
 </script>
 </body>
 </html>
