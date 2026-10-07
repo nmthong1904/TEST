@@ -10171,8 +10171,6 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
     #notice { top:12px; background:rgba(251,188,4,.95); color:#111; }
     .time { font-size:15px; margin-top:12px; opacity:.97; line-height:1.5; }
     .hint { font-size:12px; margin-top:16px; opacity:.7; }
-    #oBtn { margin-top:20px; background:#fff; color:#111; font-size:17px; font-weight:bold;
-            padding:14px 22px; border-radius:12px; border:0; cursor:pointer; }
     #overlay { cursor:pointer; }
     .icon { font-size:64px; line-height:1; }
     .name { font-size:26px; font-weight:bold; margin-top:10px; }
@@ -10228,7 +10226,6 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
       <div class="meta" id="oMeta"></div>
       <div class="msg" id="oMsg"></div>
       <div class="time" id="oTime"></div>
-      <button id="oBtn">XÁC NHẬN • QUÉT THẺ TIẾP THEO</button>
       <div class="hint" id="oHint">Chạm màn hình để quét tiếp</div>
     </div>
   </div>
@@ -10362,10 +10359,9 @@ function vnTime() {
 
 // ===== QUÉT TỪNG THẺ MỘT =====
 // Quét 1 thẻ -> khóa camera -> chờ máy chủ -> hiện màn hình kết quả đủ lâu -> mới quét thẻ kế tiếp
-// true  = phải bấm nút "XÁC NHẬN • QUÉT THẺ TIẾP THEO" trên màn hình kết quả thì mới quay lại quét thẻ kế tiếp
-// false = tự quay lại quét sau RESULT_HOLD_MS (chạm màn hình để quay lại sớm hơn)
-const REQUIRE_CONFIRM = true;
-const RESULT_HOLD_MS = { ok: 2500, warn: 3500, err: 3500 }; // chỉ dùng khi REQUIRE_CONFIRM = false (mili-giây)
+// Sau khi trả kết quả, màn hình kết quả hiện trong khoảng thời gian dưới đây rồi TỰ quay lại camera để quét thẻ kế tiếp
+// (có thể chạm vào màn hình để quay lại sớm hơn). Đơn vị: mili-giây (1000 = 1 giây)
+const RESULT_HOLD_MS = { ok: 2000, warn: 3000, err: 3000 };
 
 const pending = {};          // MSNV đang chờ máy chủ trả lời (tối đa 1)
 let blockedCode = '';        // thẻ vừa xử lý: phải rời khỏi khung hình rồi mới quét lại được
@@ -10394,10 +10390,8 @@ function notice(text, ms) {
 // Hiện màn hình kết quả và giữ ms mili-giây (hoặc chạm vào màn hình để quét tiếp ngay)
 function holdResult(type, icon, name, meta, msg, timeText, ms) {
   showOverlay(type, icon, name, meta, msg, timeText);
-  document.getElementById('oBtn').style.display = REQUIRE_CONFIRM ? 'inline-block' : 'none';
-  document.getElementById('oHint').style.display = REQUIRE_CONFIRM ? 'none' : 'block';
   clearTimeout(holdTimer);
-  if (!REQUIRE_CONFIRM) holdTimer = setTimeout(endHold, ms);
+  holdTimer = setTimeout(endHold, ms);   // hết thời gian -> tự hiện lại camera để quét tiếp
 }
 
 function endHold() {
@@ -10407,9 +10401,7 @@ function endHold() {
   blockedSeen = Date.now();
   busy = false;                    // mở khóa -> quay lại màn hình quét
 }
-document.getElementById('overlay').addEventListener('click', function (e) {
-  if (!REQUIRE_CONFIRM || e.target.id === 'oBtn') endHold();
-});
+document.getElementById('overlay').addEventListener('click', endHold);
 
 function handleCode(text) {
   const msnv = extractMsnv(text);
