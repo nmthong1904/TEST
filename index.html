@@ -10327,6 +10327,14 @@ function extractMsnv(text) {
   return /^[\w\-.]{1,30}$/.test(text) ? text : '';
 }
 
+// Giờ Việt Nam (dd/MM/yyyy HH:mm:ss) bất kể múi giờ của điện thoại
+function vnDateTime() {
+  return new Date().toLocaleString('en-GB', { timeZone: 'Asia/Ho_Chi_Minh', hour12: false }).replace(',', '');
+}
+function vnTime() {
+  return new Date().toLocaleTimeString('en-GB', { timeZone: 'Asia/Ho_Chi_Minh', hour12: false });
+}
+
 const pending = {};          // MSNV đang chờ máy chủ trả lời
 let overlayTimer = null;
 const SCAN_PAUSE = 900;      // ms: chỉ tạm dừng quét ngắn, KHÔNG chờ máy chủ
@@ -10397,7 +10405,7 @@ function onResult(msnv, res, li, ms) {
     document.getElementById('count').textContent = okCount;
     beep('ok');
   } else if (res.duplicate) {
-    type = 'warn'; icon = '⚠'; text = 'Đã nhận suất ăn lúc ' + res.time; delay = 2000;
+    type = 'warn'; icon = '⚠'; text = 'Đã nhận lúc ' + res.time + (res.next ? ' • Quét lại được sau ' + res.next : ''); delay = 2600;
     beep('err');
   } else {
     type = 'err'; icon = '✕'; text = res.message; delay = 2200;
@@ -10432,8 +10440,8 @@ function setLast(type, icon, name, emp, msnv, text) {
   box.className = 'last ' + type;
   document.getElementById('lName').textContent = name;
   document.getElementById('lInfo').textContent = emp
-    ? 'MSNV: ' + emp.msnv + '  •  Đơn vị: ' + emp.donVi + '  •  Quét lúc ' + new Date().toLocaleTimeString('vi-VN')
-    : 'MSNV: ' + msnv + '  •  Quét lúc ' + new Date().toLocaleTimeString('vi-VN');
+    ? 'MSNV: ' + emp.msnv + '  •  Đơn vị: ' + emp.donVi + '  •  Quét lúc ' + vnDateTime()
+    : 'MSNV: ' + msnv + '  •  Quét lúc ' + vnDateTime();
   document.getElementById('lStatus').textContent = icon + ' ' + text;
 }
 
@@ -10452,7 +10460,7 @@ function updateHistory(li, type, name, msnv, unit, ms) {
 }
 
 function fillHistory(li, type, name, msnv, unit, ms) {
-  const time = li.dataset.time || (li.dataset.time = new Date().toLocaleTimeString('vi-VN'));
+  const time = li.dataset.time || (li.dataset.time = vnTime());
   const labels = { load: '⏳ Đang ghi nhận...', ok: '✓ Đã ghi nhận', warn: '⚠ Trùng', err: '✕ Lỗi' };
   li.children[0].textContent = name + ' (' + msnv + (unit ? ' - ' + unit : '') + ') • ' + time;
   li.children[1].textContent = labels[type] + (ms != null ? ' (' + (ms / 1000).toFixed(1) + 's)' : '');
