@@ -10176,7 +10176,7 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
     }
     #notice { top:12px; background:rgba(251,188,4,.95); color:#111; }
     .time { font-size:15px; margin-top:12px; opacity:.97; line-height:1.5; }
-    .hint { font-size:12px; margin-top:16px; opacity:.7; }
+    .hint { display:none; }   /* kết quả tự ẩn sau 1 giây nên không cần dòng nhắc chạm màn hình */
     #overlay { cursor:pointer; }
     .icon { font-size:64px; line-height:1; }
     .name { font-size:26px; font-weight:bold; margin-top:10px; }
@@ -10486,7 +10486,7 @@ function vnTime() {
 // Quét 1 thẻ -> khóa camera -> chờ máy chủ -> hiện màn hình kết quả đủ lâu -> mới quét thẻ kế tiếp
 // Sau khi trả kết quả, màn hình kết quả hiện trong khoảng thời gian dưới đây rồi TỰ quay lại camera để quét thẻ kế tiếp
 // (có thể chạm vào màn hình để quay lại sớm hơn). Đơn vị: mili-giây (1000 = 1 giây)
-const RESULT_HOLD_MS = { ok: 2000, warn: 3000, err: 3000 };
+const RESULT_HOLD_MS = { ok: 1000, warn: 1000, err: 1000 };   // 1000 = 1 giây, tự ẩn, nhân viên không cần bấm
 
 const pending = {};          // MSNV đang chờ máy chủ trả lời (tối đa 1)
 let blockedCode = '';        // thẻ vừa xử lý: phải rời khỏi khung hình rồi mới quét lại được
