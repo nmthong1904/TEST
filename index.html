@@ -4,12 +4,14 @@
   <base target="_top">
   <meta name="viewport" content="width=device-width, initial-scale=1">
 
-  <!-- ======================================================================
-       QUAN TRỌNG: THAY CẢ DÒNG NÀY BẰNG KHỐI <script>...</script> CHỨA THƯ VIỆN jsQR
-       TRONG FILE CŨ CỦA BẠN (khối bắt đầu bằng "(function webpackUniversalModuleDefinition"
-       và kết thúc bằng "</script>" ngay trước thẻ <style>). Giữ nguyên, không sửa gì.
-       ====================================================================== -->
-  <script>/* DÁN LẠI KHỐI jsQR Ở ĐÂY */</script>
+  <!-- Thư viện đọc mã QR (jsQR), tải từ CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+  <script>
+    // Dự phòng: nếu jsDelivr bị chặn thì tải từ cdnjs
+    if (typeof jsQR === 'undefined') {
+      document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.js"><\/script>');
+    }
+  </script>
 
   <style>
     * { box-sizing:border-box; }
@@ -296,6 +298,10 @@ document.addEventListener('keydown', function (e) {
 async function startScan() {
   const err = document.getElementById('startErr');
   err.textContent = '';
+  if (typeof jsQR === 'undefined') {
+    err.textContent = 'Chưa tải được thư viện đọc QR (jsQR). Kiểm tra mạng rồi tải lại trang.';
+    return;
+  }
   try {
     // Tạo âm thanh (cần thao tác bấm nút của người dùng)
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
