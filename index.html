@@ -112,7 +112,7 @@
     .t-load { color:#aaa; } .t-ok { color:#81c995; } .t-warn { color:#fdd663; } .t-err { color:#f28b82; }
 
     /* ----- Đăng nhập ----- */
-    #loginBox {
+    #loginBox, #resumeBox {
       position:fixed; inset:0; background:#111; display:none;
       align-items:center; justify-content:center; padding:20px; z-index:50;
     }
@@ -124,6 +124,8 @@
       border:1px solid #444; background:#111; color:#fff; font-size:16px;
     }
     .lcard button { width:100%; }
+    .lcard .remember { display:flex; align-items:center; gap:10px; margin:2px 0 16px; font-size:14px; color:#ccc; cursor:pointer; }
+    .lcard .remember input { width:20px; height:20px; padding:0; margin:0; flex:none; }
     #loginErr { color:#ff8a80; font-size:14px; min-height:20px; margin-top:10px; text-align:center; }
     .userbar { display:flex; justify-content:space-between; align-items:center; font-size:13px; color:#aaa; margin-bottom:8px; }
     .userbar button { background:#333; font-size:13px; padding:6px 12px; border-radius:8px; }
@@ -136,13 +138,21 @@
     <p>Đăng nhập để sử dụng trang quét suất ăn.</p>
     <input id="lUser" type="text" placeholder="Tài khoản" autocomplete="username" autocapitalize="none" autocorrect="off">
     <input id="lPass" type="password" placeholder="Mật khẩu" autocomplete="current-password">
+    <label class="remember"><input id="lRemember" type="checkbox" checked> Ghi nhớ đăng nhập trên thiết bị này</label>
     <button id="lBtn" onclick="doLogin()">ĐĂNG NHẬP</button>
     <div id="loginErr"></div>
   </div>
 </div>
+<div id="resumeBox">
+  <div class="lcard" style="text-align:center">
+    <h2>⏳ Đang đăng nhập lại...</h2>
+    <p style="margin:0">Thiết bị này đã được ghi nhớ, không cần nhập lại mật khẩu.</p>
+    <button style="margin-top:18px;background:#333;font-size:14px;padding:10px 18px" onclick="skipResume()">Nhập tài khoản thủ công</button>
+  </div>
+</div>
 
 <div class="wrap">
-  <div class="userbar"><span id="userName"></span><button onclick="doLogout()">Đăng xuất</button></div>
+  <div class="userbar"><span><span id="userName"></span> <span id="srvInfo" style="color:#fbbc04"></span></span><button onclick="doLogout()">Đăng xuất</button></div>
 
   <div class="top">
     <h1>🍚 QUÉT SUẤT ĂN</h1>
@@ -186,9 +196,15 @@
 <canvas id="canvas" style="display:none"></canvas>
 
 <script>
+// ===== URL WEB APP (kết thúc bằng /exec) =====
+// Máy chủ CHÍNH và máy chủ DỰ PHÒNG (tài khoản Google khác, dùng chung 1 file Google Sheets).
+// Chưa dùng dự phòng thì để trống dòng thứ hai ('').
+const API_URLS = [
 // ===== DÁN URL WEB APP (kết thúc bằng /exec) VÀO ĐÂY =====
 //const API_URL = 'https://script.google.com/macros/s/AKfycbxuXs5l3KxHqTJGdesk_CBjGrzlQC-4jZk5rVgXbP7czTCX0KoDuIy3tb9ceKMi2mOk/exec';
 const API_URL = 'https://script.google.com/macros/s/AKfycbw91d2hgzGhBHhZ2FScgTBpGpfrxNacngrBAatDyGw0cXS7d1Oai8_29b7f8r0WXsUEPg/exec';
+];
+const SERVERS = API_URLS.filter(function (u) { return u; });
 // ==========================================================
 
 // Bật = true nếu muốn máy đọc thành tiếng "Trùng suất ăn" / "Không có nhân viên"
@@ -207,6 +223,8 @@ let okCount = 0;
 let lastTick = 0;
 let audioCtx = null;
 let camListenersAdded = false;
+let activeIdx = 0;          // máy chủ đang dùng: 0 = chính, 1 = dự phòng
+let primaryOkStreak = 0;     // số lần ping liên tiếp máy chủ chính trả lời tốt
 
 const SAME_CODE_COOLDOWN = 4000; // ms: bỏ qua cùng 1 mã quét lặp lại liên tục
 
@@ -216,7 +234,7 @@ const AUTH_KEY = 'scan_auth';
 function loadAuth() {
   try {
     const a = JSON.parse(localStorage.getItem(AUTH_KEY) || 'null');
-    if (a && a.token && a.exp > Date.now()) return a;
+    if (a && a.tokens && a.exp > Date.now()) return a;
   } catch (e) {}
   return null;
 }
@@ -237,57 +255,165 @@ function stopScan() {
   document.getElementById('pendingBar').style.display = 'none';
 }
 
+// ---------- Ghi nhớ đăng nhập trên thiết bị ----------
+// Mã thiết bị (dài hạn) lưu riêng với phiên đăng nhập (6 giờ). Hết phiên -> tự đổi mã thiết bị lấy phiên mới.
+const DEVICE_KEY = 'scan_device';
+let resuming = null;      // đang đăng nhập lại ngầm (tránh gọi trùng)
+let resumeMsg = '';       // lý do máy chủ từ chối ghi nhớ (hiện ở màn hình đăng nhập)
+
+function loadDevice() {
+  try {
+    const d = JSON.parse(localStorage.getItem(DEVICE_KEY) || 'null');
+    if (d && d.tokens && d.tokens.some(function (t) { return t; })) return d;
+  } catch (e) {}
+  return null;
+}
+function hasDevice() { return !!loadDevice(); }
+
+// Đổi mã thiết bị lấy phiên mới. Trả về Promise: phiên mới, hoặc null nếu không được.
+// Chỉ xóa mã thiết bị khi máy chủ TỪ CHỐI rõ ràng; lỗi mạng / lỗi tạm thời thì giữ lại để thử lại.
+function resumeSession() {
+  if (resuming) return resuming;
+  const d = loadDevice();
+  if (!d) return Promise.resolve(null);
+  resumeMsg = '';
+
+  resuming = Promise.all(SERVERS.map(function (url, i) {
+    if (!d.tokens[i]) return Promise.resolve({ ok: false, skip: true });
+    return fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ action: 'resume', deviceToken: d.tokens[i] })
+    })
+      .then(function (r) { return r.json(); })
+      .catch(function () { return { ok: false, net: true }; });
+  }))
+    .then(function (results) {
+      let changed = false;
+      results.forEach(function (r, i) {
+        if (r && !r.ok && !r.net && !r.skip && !r.retry) {      // bị từ chối thật sự -> bỏ mã thiết bị của máy chủ đó
+          if (!resumeMsg) resumeMsg = r.message || '';
+          d.tokens[i] = null; changed = true;
+        }
+      });
+      if (changed) {
+        if (d.tokens.some(function (t) { return t; })) localStorage.setItem(DEVICE_KEY, JSON.stringify(d));
+        else localStorage.removeItem(DEVICE_KEY);
+      }
+      const good = results.filter(function (r) { return r && r.ok; });
+      if (!good.length) return null;
+      const life = Math.min.apply(null, good.map(function (r) { return r.expiresIn || 21600; }));
+      const a = {
+        tokens: results.map(function (r) { return (r && r.ok) ? r.token : null; }),
+        user: good[0].user, name: good[0].hoTen,
+        exp: Date.now() + life * 1000 - 60000
+      };
+      localStorage.setItem(AUTH_KEY, JSON.stringify(a));
+      if (!a.tokens[activeIdx]) activeIdx = a.tokens.map(function (t) { return !!t; }).indexOf(true);
+      return a;
+    })
+    .then(function (a) { resuming = null; return a; }, function () { resuming = null; return null; });
+  return resuming;
+}
+
+// Bỏ qua việc tự đăng nhập lại, nhập tài khoản thủ công
+function skipResume() {
+  localStorage.removeItem(DEVICE_KEY);
+  showLogin('');
+}
+
+function showLogin(msg) {
+  document.getElementById('lPass').value = '';
+  document.getElementById('loginErr').textContent = msg || '';
+  document.getElementById('resumeBox').style.display = 'none';
+  document.getElementById('loginBox').style.display = 'flex';
+}
+
 function applyAuth() {
   const a = loadAuth();
   const box = document.getElementById('loginBox');
+  const rbox = document.getElementById('resumeBox');
   if (a) {
     box.style.display = 'none';
+    rbox.style.display = 'none';
     document.getElementById('userName').textContent = '👤 ' + (a.name || a.user);
-  } else {
-    stopScan();
-    document.getElementById('userName').textContent = '';
-    document.getElementById('lPass').value = '';
-    box.style.display = 'flex';
+    renderServer();
+    return;
   }
+  stopScan();
+  document.getElementById('userName').textContent = '';
+  if (hasDevice()) {                 // thiết bị đã được ghi nhớ -> tự đăng nhập lại, không hỏi mật khẩu
+    box.style.display = 'none';
+    rbox.style.display = 'flex';
+    resumeSession().then(function (na) {
+      if (na) applyAuth();
+      else if (hasDevice()) setTimeout(applyAuth, 5000);   // mã thiết bị còn nhưng chưa kết nối được máy chủ (mạng yếu) -> thử lại sau 5 giây
+      else showLogin(resumeMsg);                           // máy chủ từ chối (đổi mật khẩu, khóa, hết hạn...) -> hỏi mật khẩu
+    });
+    return;
+  }
+  showLogin('');
 }
 
 function doLogin() {
   const u = document.getElementById('lUser').value.trim();
   const p = document.getElementById('lPass').value;
+  const remember = document.getElementById('lRemember').checked;
   const err = document.getElementById('loginErr');
   const btn = document.getElementById('lBtn');
   err.textContent = '';
   if (!u || !p) { err.textContent = 'Vui lòng nhập tài khoản và mật khẩu.'; return; }
   btn.disabled = true; btn.textContent = 'Đang đăng nhập...';
 
-  fetch(API_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'text/plain;charset=utf-8' },   // tránh preflight CORS với Apps Script
-    body: JSON.stringify({ action: 'login', username: u, password: p })
-  })
-    .then(function (r) { return r.json(); })
-    .then(function (res) {
-      if (res && res.ok) {
+  // Đăng nhập song song vào TẤT CẢ máy chủ (chính + dự phòng) để khi chuyển máy không phải đăng nhập lại
+  Promise.all(SERVERS.map(function (url) {
+    return fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },   // tránh preflight CORS với Apps Script
+      body: JSON.stringify({ action: 'login', username: u, password: p, remember: remember })
+    })
+      .then(function (r) { return r.json(); })
+      .catch(function (e) { return { ok: false, net: true, message: 'Lỗi kết nối: ' + (e && e.message ? e.message : e) }; });
+  }))
+    .then(function (results) {
+      const good = results.filter(function (r) { return r && r.ok; });
+      if (good.length) {
+        const life = Math.min.apply(null, good.map(function (r) { return r.expiresIn || 21600; }));
         localStorage.setItem(AUTH_KEY, JSON.stringify({
-          token: res.token, user: res.user, name: res.hoTen,
-          exp: Date.now() + (res.expiresIn || 21600) * 1000 - 60000
+          tokens: results.map(function (r) { return (r && r.ok) ? r.token : null; }),
+          user: good[0].user, name: good[0].hoTen,
+          exp: Date.now() + life * 1000 - 60000
         }));
+        // Ghi nhớ thiết bị: lưu mã thiết bị dài hạn của từng máy chủ
+        const devs = results.map(function (r) { return (r && r.ok && r.deviceToken) ? r.deviceToken : null; });
+        if (remember && devs.some(function (t) { return t; })) {
+          localStorage.setItem(DEVICE_KEY, JSON.stringify({ tokens: devs, user: good[0].user, name: good[0].hoTen }));
+        } else {
+          localStorage.removeItem(DEVICE_KEY);
+        }
+        activeIdx = results.map(function (r) { return !!(r && r.ok); }).indexOf(true); // ưu tiên máy chủ đăng nhập được
         applyAuth();
       } else {
-        err.textContent = (res && res.message) || 'Đăng nhập không thành công.';
+        const real = results.filter(function (r) { return r && !r.net; })[0] || results[0];
+        err.textContent = (real && real.message) || 'Đăng nhập không thành công.';
       }
     })
-    .catch(function (e) { err.textContent = 'Lỗi kết nối: ' + (e && e.message ? e.message : e); })
     .finally(function () { btn.disabled = false; btn.textContent = 'ĐĂNG NHẬP'; });
 }
 
+// Đăng xuất = quên luôn thiết bị này (lần sau phải nhập lại tài khoản)
 function doLogout() {
   const a = loadAuth();
+  const d = loadDevice();
   localStorage.removeItem(AUTH_KEY);
-  if (a) {
-    fetch(API_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ action: 'logout', token: a.token }) }).catch(function () {});
-  }
+  localStorage.removeItem(DEVICE_KEY);
+  SERVERS.forEach(function (url, i) {
+    const tok = a && a.tokens && a.tokens[i];
+    const dev = d && d.tokens && d.tokens[i];
+    if (!tok && !dev) return;
+    fetch(url, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ action: 'logout', token: tok || '', deviceToken: dev || '' }) }).catch(function () {});
+  });
   applyAuth();
 }
 
@@ -306,6 +432,7 @@ async function startScan() {
   try {
     // Tạo âm thanh (cần thao tác bấm nút của người dùng)
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    loadSounds();   // nạp sẵn các file âm thanh tùy chỉnh (nếu có)
 
     const stream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
@@ -454,8 +581,15 @@ function handleCode(text) {
   }
   if (busy) return;
 
-  const cur = loadAuth();          // chưa đăng nhập / hết phiên -> yêu cầu đăng nhập lại
-  if (!cur) { applyAuth(); return; }
+  const cur = loadAuth();          // chưa đăng nhập / hết phiên
+  if (!cur) {
+    if (hasDevice()) {             // đã ghi nhớ thiết bị -> đăng nhập lại ngầm rồi xử lý tiếp thẻ này
+      busy = true;
+      resumeSession().then(function (a) { busy = false; if (a) handleCode(text); else applyAuth(); });
+      return;
+    }
+    applyAuth(); return;           // chưa ghi nhớ -> yêu cầu đăng nhập lại
+  }
 
   busy = true;                     // KHÓA: chỉ xử lý một thẻ tại một thời điểm
   currentMsnv = msnv;
@@ -466,23 +600,76 @@ function handleCode(text) {
   updatePending();
   const started = Date.now();
 
-  const ctrl = new AbortController();
-  const timer = setTimeout(function () { ctrl.abort(); }, 25000);
-
-  // _ = Date.now() và cache:'no-store' để trình duyệt KHÔNG dùng lại kết quả cũ
-  fetch(API_URL + '?action=record&msnv=' + encodeURIComponent(msnv) +
-        '&token=' + encodeURIComponent(cur.token) + '&_=' + Date.now(),
-        { signal: ctrl.signal, cache: 'no-store' })
-    .then(function (r) { return r.json(); })
+  tryRecord(msnv, cur)
     .then(function (res) {
-      clearTimeout(timer); delete pending[msnv]; updatePending();
+      // Phiên hết hạn giữa chừng nhưng đã ghi nhớ thiết bị -> đăng nhập lại ngầm rồi ghi nhận lại thẻ này
+      if (res && res.auth === false && hasDevice()) {
+        return resumeSession().then(function (a) { return a ? tryRecord(msnv, a) : res; });
+      }
+      return res;
+    })
+    .then(function (res) {
+      delete pending[msnv]; updatePending();
       onResult(msnv, res, li, Date.now() - started);
     })
     .catch(function (err) {
-      clearTimeout(timer); delete pending[msnv]; updatePending();
-      onResult(msnv, { ok: false, message: 'Lỗi kết nối: ' + (err && err.message ? err.message : err) },
-        li, Date.now() - started);
+      delete pending[msnv]; updatePending();
+      onResult(msnv, { ok: false, message: (SERVERS.length > 1 ? 'Cả hai máy chủ đều lỗi. ' : '') +
+        'Lỗi kết nối: ' + (err && err.message ? err.message : err) }, li, Date.now() - started);
     });
+}
+
+// ===== CHUYỂN MÁY CHỦ DỰ PHÒNG =====
+// Thử máy chủ đang dùng; nếu mất kết nối / quá thời gian / trả về lỗi không phải dữ liệu (ví dụ hết hạn mức)
+// thì chuyển sang máy chủ kế tiếp. Dữ liệu luôn nằm ở CÙNG một file Google Sheets nên kiểm tra trùng vẫn đúng.
+// KHÔNG chuyển máy khi máy chủ trả lời bình thường (kể cả "Trùng", "Không tìm thấy nhân viên", "Hệ thống đang bận").
+const TIMEOUT_FIRST_MS = 12000;   // máy chủ không phải cuối: chờ tối đa 12 giây rồi chuyển máy
+const TIMEOUT_LAST_MS = 25000;    // máy chủ cuối cùng: chờ tối đa 25 giây
+
+function recordOn(i, msnv, cur, isLast) {
+  const tok = cur.tokens && cur.tokens[i];
+  if (!tok) return Promise.reject(new Error('Chưa đăng nhập máy chủ ' + (i === 0 ? 'chính' : 'dự phòng')));
+  const ctrl = new AbortController();
+  const timer = setTimeout(function () { ctrl.abort(); }, isLast ? TIMEOUT_LAST_MS : TIMEOUT_FIRST_MS);
+  // _ = Date.now() và cache:'no-store' để trình duyệt KHÔNG dùng lại kết quả cũ
+  return fetch(SERVERS[i] + '?action=record&msnv=' + encodeURIComponent(msnv) +
+      '&token=' + encodeURIComponent(tok) + '&_=' + Date.now(),
+      { signal: ctrl.signal, cache: 'no-store' })
+    .then(function (r) { return r.json(); })
+    .then(function (res) { clearTimeout(timer); return res; },
+          function (e) { clearTimeout(timer); throw e; });
+}
+
+function tryRecord(msnv, cur) {
+  const n = SERVERS.length;
+  const order = [];
+  for (let k = 0; k < n; k++) order.push((activeIdx + k) % n);
+  let lastErr = null, lastAuth = null;
+
+  function attempt(k) {
+    if (k >= order.length) {
+      if (lastAuth) return Promise.resolve(lastAuth);
+      return Promise.reject(lastErr || new Error('Không kết nối được máy chủ.'));
+    }
+    const i = order[k];
+    return recordOn(i, msnv, cur, k === order.length - 1).then(function (res) {
+      if (res && res.auth === false) { lastAuth = res; return attempt(k + 1); }  // phiên hết hạn ở máy này, thử máy kia
+      if (i !== activeIdx) {
+        activeIdx = i; renderServer();
+        notice(i === 0 ? '✓ Đã quay về máy chủ chính' : '⚠ Đã chuyển sang máy chủ dự phòng', 3000);
+      }
+      return res;
+    }, function (e) {
+      lastErr = e;
+      return attempt(k + 1);
+    });
+  }
+  return attempt(0);
+}
+
+function renderServer() {
+  const el = document.getElementById('srvInfo');
+  if (el) el.textContent = (SERVERS.length > 1 && activeIdx > 0) ? '⚠ Đang dùng máy chủ DỰ PHÒNG' : '';
 }
 
 function onResult(msnv, res, li, ms) {
@@ -502,7 +689,8 @@ function onResult(msnv, res, li, ms) {
 
   if (res.ok) {
     type = 'ok'; icon = '✓'; msg = res.message;
-    timeText = '🕒 Thời gian: ' + res.time;               // đúng bằng giờ đã ghi trong sheet LICH_SU_AN
+    timeText = '🕒 Thời gian: ' + res.time;
+    if (res.note) timeText += '\n⏰ ' + res.note;      // nhắc: hợp đồng sắp hết hạn               // đúng bằng giờ đã ghi trong sheet LICH_SU_AN
     okCount++;
     document.getElementById('count').textContent = okCount;
     beep('ok');
@@ -511,21 +699,44 @@ function onResult(msnv, res, li, ms) {
     timeText = '🕒 Quét lúc: ' + vnDateTime() + '\nĐã nhận lúc: ' + res.time +
       (res.next ? '\nQuét lại được sau: ' + res.next : '');
     beep('dup');                                    // TRÙNG: 3 tiếng bíp
+  } else if (res.blocked) {
+    type = 'err'; icon = '⛔'; msg = res.message;           // hợp đồng hết hạn / thẻ bị khóa
+    timeText = '🕒 Thời gian: ' + vnDateTime();
+    beep('blocked');
   } else {
     type = 'err'; icon = '✕'; msg = res.message;
     timeText = '🕒 Thời gian: ' + vnDateTime();
     beep(res.notFound ? 'notfound' : 'err');        // CHƯA TẠO NHÂN VIÊN: bzzzt trầm; lỗi khác: 2 tiếng ngắn
   }
 
-  holdResult(type, icon, name, meta, msg, timeText, RESULT_HOLD_MS[type]);
+  const hold = res.blocked ? 3000 : (res.note ? 2500 : RESULT_HOLD_MS[type]);   // bị chặn / sắp hết hạn: hiện lâu hơn để nhà ăn kịp đọc
+  holdResult(type, icon, name, meta, msg, timeText, hold);
   setLast(type, icon, name, emp, msnv, msg);
   updateHistory(li, type, name, msnv, emp ? emp.donVi : '', ms);
 }
 
-// Gọi nhẹ lên máy chủ định kỳ để Apps Script không bị "nguội" (khởi động lại rất chậm)
-function ping() { fetch(API_URL + '?action=ping&_=' + Date.now(), { cache: 'no-store' }).catch(function () {}); }
+// Gọi nhẹ lên các máy chủ định kỳ để Apps Script không bị "nguội" (khởi động lại rất chậm)
+// Nếu đang dùng máy chủ dự phòng và máy chủ chính đã trả lời tốt 2 lần liên tiếp (~4-8 phút) -> quay về máy chủ chính
+function ping() {
+  SERVERS.forEach(function (url, i) {
+    fetch(url + '?action=ping&_=' + Date.now(), { cache: 'no-store' })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (i !== 0) return;
+        primaryOkStreak = (j && j.ok) ? primaryOkStreak + 1 : 0;
+        if (primaryOkStreak >= 2 && activeIdx !== 0 && !busy) { activeIdx = 0; renderServer(); }
+      })
+      .catch(function () { if (i === 0) primaryOkStreak = 0; });
+  });
+}
 ping();
 setInterval(ping, 4 * 60 * 1000);
+
+// Đã ghi nhớ thiết bị: tự gia hạn phiên khi còn dưới 15 phút, nhà ăn không bị gián đoạn giữa giờ
+setInterval(function () {
+  const a = loadAuth();
+  if (a && a.exp - Date.now() < 15 * 60 * 1000 && hasDevice() && !busy) resumeSession();
+}, 60 * 1000);
 
 // ---------- Giao diện ----------
 function showOverlay(type, icon, name, meta, msg, timeText) {
@@ -574,10 +785,58 @@ function fillHistory(li, type, name, msnv, unit, ms) {
   li.children[1].className = 't-' + type;
 }
 
+// ===== ÂM THANH TÙY CHỈNH (dùng file của riêng bạn thay cho tiếng bíp) =====
+// Điền đường dẫn file âm thanh (mp3 / wav) cho từng trường hợp.
+// Để '' (trống) = dùng tiếng bíp mặc định của trang. File nào lỗi / không tải được cũng tự quay về tiếng bíp mặc định.
+// Cách điền:
+//   (A) Đường dẫn tới file đặt cùng nơi với trang quét, ví dụ: 'sounds/ok.mp3'
+//   (B) Nhúng thẳng vào trang (không cần nơi lưu file): 'data:audio/mpeg;base64,AAAA...' (nên dùng file ngắn, dưới ~50 KB)
+const SOUND_FILES = {
+  scan:     '',   // vừa đọc được mã QR (tiếng "tít" ngắn, phát ngay trước khi chờ máy chủ)
+  ok:       'sounds/ok.mp3',   // HỢP LỆ: đã ghi nhận suất ăn
+  dup:      'sounds/trung.mp3',   // TRÙNG suất ăn
+  notfound: '',   // CHƯA TẠO NHÂN VIÊN (không có MSNV trong sheet)
+  blocked:  '',   // HẾT HẠN HỢP ĐỒNG / thẻ bị khóa
+  err:      ''    // lỗi khác (mất mạng, hệ thống bận...)
+};
+const SOUND_VOLUME = 1.0;       // 0 -> 1 (âm lượng của file tùy chỉnh)
+const soundBuffers = {};        // file đã nạp sẵn, phát tức thì khi cần
+
+// Nạp sẵn & giải mã các file âm thanh (gọi sau khi người dùng bấm "BẮT ĐẦU QUÉT")
+function loadSounds() {
+  if (!audioCtx) return;
+  Object.keys(SOUND_FILES).forEach(function (k) {
+    const url = SOUND_FILES[k];
+    if (!url || soundBuffers[k]) return;
+    fetch(url)
+      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.arrayBuffer(); })
+      .then(function (buf) { return new Promise(function (res, rej) { audioCtx.decodeAudioData(buf, res, rej); }); })
+      .then(function (decoded) { soundBuffers[k] = decoded; })
+      .catch(function (e) { console.warn('Không nạp được âm thanh "' + k + '", dùng tiếng bíp mặc định:', e); });
+  });
+}
+
+// Phát file tùy chỉnh. Trả về true nếu đã phát, false nếu chưa có file (khi đó dùng tiếng bíp mặc định)
+function playCustom(kind) {
+  const b = soundBuffers[kind];
+  if (!b || !audioCtx) return false;
+  try {
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    const src = audioCtx.createBufferSource();
+    const gain = audioCtx.createGain();
+    gain.gain.value = SOUND_VOLUME;
+    src.buffer = b;
+    src.connect(gain); gain.connect(audioCtx.destination);
+    src.start();
+    return true;
+  } catch (e) { return false; }
+}
+
 // Tiếng "tít" ngắn ngay khi đọc được mã (chưa cần chờ máy chủ)
 function beepScan() {
   try {
     if (!audioCtx) return;
+    if (playCustom('scan')) return;     // có file tùy chỉnh thì dùng file
     const osc = audioCtx.createOscillator();
     const gain = audioCtx.createGain();
     osc.frequency.value = 1400;
@@ -607,15 +866,17 @@ function playTones(seq) {
   } catch (e) {}
 }
 
-// kind: 'ok' hợp lệ | 'dup' trùng | 'notfound' chưa tạo nhân viên | 'err' lỗi khác
+// kind: 'ok' hợp lệ | 'dup' trùng | 'notfound' chưa tạo nhân viên | 'blocked' hết hạn hợp đồng / thẻ khóa | 'err' lỗi khác
 function beep(kind) {
   try {
     if (navigator.vibrate) {
-      navigator.vibrate({ ok: 80, dup: [150, 80, 150], notfound: [600], err: [120, 60, 120] }[kind] || 100);
+      navigator.vibrate({ ok: 80, dup: [150, 80, 150], notfound: [600], blocked: [300, 100, 300, 100, 300], err: [120, 60, 120] }[kind] || 100);
     }
   } catch (e) {}
 
-  if (kind === 'ok') {
+  if (playCustom(kind)) {
+    // đã phát file âm thanh tùy chỉnh
+  } else if (kind === 'ok') {
     // HỢP LỆ: "ding-ding" cao, đi lên, nghe vui tai
     playTones([{ f: 880, t: 0, d: 0.10 }, { f: 1320, t: 0.12, d: 0.18 }]);
   } else if (kind === 'dup') {
@@ -624,6 +885,14 @@ function beep(kind) {
       { f: 600, t: 0,    d: 0.12, type: 'square', v: 0.15 },
       { f: 600, t: 0.20, d: 0.12, type: 'square', v: 0.15 },
       { f: 600, t: 0.40, d: 0.12, type: 'square', v: 0.15 }
+    ]);
+  } else if (kind === 'blocked') {
+    // HẾT HẠN HỢP ĐỒNG / THẺ BỊ KHÓA: tiếng còi "ú-u, ú-u" cao thấp xen kẽ, khác hẳn các âm còn lại
+    playTones([
+      { f: 760, t: 0,    d: 0.18, type: 'sawtooth', v: 0.3 },
+      { f: 420, t: 0.20, d: 0.18, type: 'sawtooth', v: 0.3 },
+      { f: 760, t: 0.40, d: 0.18, type: 'sawtooth', v: 0.3 },
+      { f: 420, t: 0.60, d: 0.18, type: 'sawtooth', v: 0.3 }
     ]);
   } else if (kind === 'notfound') {
     // CHƯA TẠO NHÂN VIÊN: một tiếng "bzzzt" trầm, dài
@@ -635,7 +904,7 @@ function beep(kind) {
 
   // Đọc thành tiếng (tùy chọn, bật bằng VOICE_ENABLED ở đầu script)
   try {
-    const say = { dup: 'Trùng suất ăn', notfound: 'Không có nhân viên' }[kind];
+    const say = { dup: 'Trùng suất ăn', notfound: 'Không có nhân viên', blocked: 'Hợp đồng hết hạn' }[kind];
     if (VOICE_ENABLED && say && window.speechSynthesis) {
       const u = new SpeechSynthesisUtterance(say);
       u.lang = 'vi-VN';
