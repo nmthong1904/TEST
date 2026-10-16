@@ -200,9 +200,8 @@
 // Máy chủ CHÍNH và máy chủ DỰ PHÒNG (tài khoản Google khác, dùng chung 1 file Google Sheets).
 // Chưa dùng dự phòng thì để trống dòng thứ hai ('').
 const API_URLS = [
-// ===== DÁN URL WEB APP (kết thúc bằng /exec) VÀO ĐÂY =====
-//'https://script.google.com/macros/s/AKfycbxuXs5l3KxHqTJGdesk_CBjGrzlQC-4jZk5rVgXbP7czTCX0KoDuIy3tb9ceKMi2mOk/exec';
-'https://script.google.com/macros/s/AKfycbw91d2hgzGhBHhZ2FScgTBpGpfrxNacngrBAatDyGw0cXS7d1Oai8_29b7f8r0WXsUEPg/exec';
+  'https://script.google.com/macros/s/AKfycbw91d2hgzGhBHhZ2FScgTBpGpfrxNacngrBAatDyGw0cXS7d1Oai8_29b7f8r0WXsUEPg/exec',   // CHÍNH
+  ''                                                                                                                   // DỰ PHÒNG
 ];
 const SERVERS = API_URLS.filter(function (u) { return u; });
 // ==========================================================
@@ -793,7 +792,7 @@ function fillHistory(li, type, name, msnv, unit, ms) {
 //   (B) Nhúng thẳng vào trang (không cần nơi lưu file): 'data:audio/mpeg;base64,AAAA...' (nên dùng file ngắn, dưới ~50 KB)
 const SOUND_FILES = {
   scan:     '',   // vừa đọc được mã QR (tiếng "tít" ngắn, phát ngay trước khi chờ máy chủ)
-  ok:       'sounds/ok.mp3',   // HỢP LỆ: đã ghi nhận suất ăn
+  ok:       'sounds/ok.mp3',      // HỢP LỆ: đã ghi nhận suất ăn
   dup:      'sounds/trung.mp3',   // TRÙNG suất ăn
   notfound: '',   // CHƯA TẠO NHÂN VIÊN (không có MSNV trong sheet)
   blocked:  '',   // HẾT HẠN HỢP ĐỒNG / thẻ bị khóa
