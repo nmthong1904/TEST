@@ -201,7 +201,7 @@
 // Chưa dùng dự phòng thì để trống dòng thứ hai ('').
 const API_URLS = [
   'https://script.google.com/macros/s/AKfycbw91d2hgzGhBHhZ2FScgTBpGpfrxNacngrBAatDyGw0cXS7d1Oai8_29b7f8r0WXsUEPg/exec',   // CHÍNH
-  'https://script.google.com/macros/s/AKfycbxuXs5l3KxHqTJGdesk_CBjGrzlQC-4jZk5rVgXbP7czTCX0KoDuIy3tb9ceKMi2mOk/exec'    // DỰ PHÒNG
+  'https://script.google.com/macros/s/AKfycbwHPPbByOYEwuXNKYqBjxGnAnjuiUwpVgwQgk-r77KEdgPk6Df_uhtG9Y1CC9GEgaXLVQ/exec'    //DỰ PHÒNG                                                                                                              
 ];
 const SERVERS = API_URLS.filter(function (u) { return u; });
 // ==========================================================
@@ -496,7 +496,8 @@ function tick(ts) {
   const code = jsQR(img.data, out, out, { inversionAttempts: 'dontInvert' });
   const nowMs = Date.now();
   if (code && code.data) {
-    const m = extractMsnv(code.data);
+    const q = parseQr(code.data);
+    const m = q ? q.id : '';
     if (blockedCode && m === blockedCode) { blockedSeen = nowMs; return; } // thẻ vừa quét vẫn còn trước camera
     handleCode(code.data);
   } else if (blockedCode && nowMs - blockedSeen > 800) {
@@ -505,15 +506,27 @@ function tick(ts) {
 }
 
 // ---------- Xử lý mã QR ----------
-function extractMsnv(text) {
+// Thẻ MỚI: QR chứa MÃ THẺ ngẫu nhiên (8-16 ký tự chữ HOA/số, bỏ O I L 0 1), dạng link ...?the=MÃ_THẺ hoặc chỉ mã thẻ.
+// Thẻ CŨ: QR chứa MSNV, dạng link ...?msnv=MSNV hoặc chỉ MSNV (máy chủ chỉ chấp nhận cho nhân viên chưa được cấp mã thẻ mới).
+// Trả về { id, byCard } hoặc null nếu không phải mã của hệ thống.
+const CARD_RE = /^[A-HJKMNP-Z2-9]{8,16}$/;
+function parseQr(text) {
   text = String(text || '').trim();
   try {
-    const m = new URL(text).searchParams.get('msnv');
-    if (m) return m.trim();
+    const u = new URL(text);
+    const t = (u.searchParams.get('the') || '').trim();
+    if (t) return { id: t.toUpperCase(), byCard: true };
+    const m = (u.searchParams.get('msnv') || '').trim();
+    if (m) return { id: m, byCard: false };
+    return null;                                   // link khác, không phải thẻ suất ăn
   } catch (e) {}
-  // Nếu QR chỉ chứa MSNV thuần
-  return /^[\w\-.]{1,30}$/.test(text) ? text : '';
+  if (CARD_RE.test(text)) return { id: text, byCard: true };                // chỉ có mã thẻ
+  if (/^[\w\-.]{1,30}$/.test(text)) return { id: text, byCard: false };     // chỉ có MSNV (thẻ cũ)
+  return null;
 }
+
+// Nhãn hiển thị cho thẻ vừa quét khi chưa biết tên (không lộ cả mã thẻ trên màn hình)
+function qrLabel(q) { return q.byCard ? 'Thẻ ••••' + q.id.slice(-3) : q.id; }
 
 // Giờ Việt Nam (dd/MM/yyyy HH:mm:ss) bất kể múi giờ của điện thoại
 function vnDateTime() {
@@ -539,7 +552,7 @@ let currentMsnv = '';
 function updatePending() {
   const n = Object.keys(pending).length;
   const el = document.getElementById('pendingBar');
-  if (n > 0) { el.textContent = '⏳ Đang ghi nhận ' + currentMsnv + '...'; el.style.display = 'block'; }
+  if (n > 0) { el.textContent = '⏳ Đang ghi nhận...'; el.style.display = 'block'; }
   else { el.style.display = 'none'; }
 }
 
@@ -570,8 +583,8 @@ function endHold() {
 document.getElementById('overlay').addEventListener('click', endHold);
 
 function handleCode(text) {
-  const msnv = extractMsnv(text);
-  if (!msnv) {
+  const q = parseQr(text);
+  if (!q) {
     const t = Date.now();
     if (text === lastCode && t - lastTime < SAME_CODE_COOLDOWN) return;
     lastCode = text; lastTime = t;
@@ -579,6 +592,7 @@ function handleCode(text) {
     return;
   }
   if (busy) return;
+  const msnv = q.id, label = qrLabel(q);   // msnv = mã dùng để tra (mã thẻ hoặc MSNV), label = chữ hiển thị
 
   const cur = loadAuth();          // chưa đăng nhập / hết phiên
   if (!cur) {
@@ -594,26 +608,26 @@ function handleCode(text) {
   currentMsnv = msnv;
   beepScan();
 
-  const li = addHistory('load', msnv, msnv, '');
+  const li = addHistory('load', label, label, '');
   pending[msnv] = true;
   updatePending();
   const started = Date.now();
 
-  tryRecord(msnv, cur)
+  tryRecord(q, cur)
     .then(function (res) {
       // Phiên hết hạn giữa chừng nhưng đã ghi nhớ thiết bị -> đăng nhập lại ngầm rồi ghi nhận lại thẻ này
       if (res && res.auth === false && hasDevice()) {
-        return resumeSession().then(function (a) { return a ? tryRecord(msnv, a) : res; });
+        return resumeSession().then(function (a) { return a ? tryRecord(q, a) : res; });
       }
       return res;
     })
     .then(function (res) {
       delete pending[msnv]; updatePending();
-      onResult(msnv, res, li, Date.now() - started);
+      onResult(label, res, li, Date.now() - started);
     })
     .catch(function (err) {
       delete pending[msnv]; updatePending();
-      onResult(msnv, { ok: false, message: (SERVERS.length > 1 ? 'Cả hai máy chủ đều lỗi. ' : '') +
+      onResult(label, { ok: false, message: (SERVERS.length > 1 ? 'Cả hai máy chủ đều lỗi. ' : '') +
         'Lỗi kết nối: ' + (err && err.message ? err.message : err) }, li, Date.now() - started);
     });
 }
@@ -625,13 +639,13 @@ function handleCode(text) {
 const TIMEOUT_FIRST_MS = 12000;   // máy chủ không phải cuối: chờ tối đa 12 giây rồi chuyển máy
 const TIMEOUT_LAST_MS = 25000;    // máy chủ cuối cùng: chờ tối đa 25 giây
 
-function recordOn(i, msnv, cur, isLast) {
+function recordOn(i, q, cur, isLast) {
   const tok = cur.tokens && cur.tokens[i];
   if (!tok) return Promise.reject(new Error('Chưa đăng nhập máy chủ ' + (i === 0 ? 'chính' : 'dự phòng')));
   const ctrl = new AbortController();
   const timer = setTimeout(function () { ctrl.abort(); }, isLast ? TIMEOUT_LAST_MS : TIMEOUT_FIRST_MS);
   // _ = Date.now() và cache:'no-store' để trình duyệt KHÔNG dùng lại kết quả cũ
-  return fetch(SERVERS[i] + '?action=record&msnv=' + encodeURIComponent(msnv) +
+  return fetch(SERVERS[i] + '?action=record&' + (q.byCard ? 'the=' : 'msnv=') + encodeURIComponent(q.id) +
       '&token=' + encodeURIComponent(tok) + '&_=' + Date.now(),
       { signal: ctrl.signal, cache: 'no-store' })
     .then(function (r) { return r.json(); })
@@ -639,7 +653,7 @@ function recordOn(i, msnv, cur, isLast) {
           function (e) { clearTimeout(timer); throw e; });
 }
 
-function tryRecord(msnv, cur) {
+function tryRecord(q, cur) {
   const n = SERVERS.length;
   const order = [];
   for (let k = 0; k < n; k++) order.push((activeIdx + k) % n);
@@ -651,7 +665,7 @@ function tryRecord(msnv, cur) {
       return Promise.reject(lastErr || new Error('Không kết nối được máy chủ.'));
     }
     const i = order[k];
-    return recordOn(i, msnv, cur, k === order.length - 1).then(function (res) {
+    return recordOn(i, q, cur, k === order.length - 1).then(function (res) {
       if (res && res.auth === false) { lastAuth = res; return attempt(k + 1); }  // phiên hết hạn ở máy này, thử máy kia
       if (i !== activeIdx) {
         activeIdx = i; renderServer();
@@ -758,7 +772,7 @@ function setLast(type, icon, name, emp, msnv, text) {
   document.getElementById('lName').textContent = name;
   document.getElementById('lInfo').textContent = emp
     ? 'MSNV: ' + emp.msnv + '  •  Đơn vị: ' + emp.donVi + '  •  Quét lúc ' + vnDateTime()
-    : 'MSNV: ' + msnv + '  •  Quét lúc ' + vnDateTime();
+    : 'Mã quét: ' + msnv + '  •  Quét lúc ' + vnDateTime();
   document.getElementById('lStatus').textContent = icon + ' ' + text;
 }
 
