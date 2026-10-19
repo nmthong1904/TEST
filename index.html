@@ -199,13 +199,28 @@
 
 <script>
 // ===== URL WEB APP (kết thúc bằng /exec) =====
-// Máy chủ CHÍNH và máy chủ DỰ PHÒNG (tài khoản Google khác, dùng chung 1 file Google Sheets).
-// Chưa dùng dự phòng thì để trống dòng thứ hai ('').
+// Máy chủ 1 = CHÍNH, máy chủ 2 và 3 = DỰ PHÒNG (tài khoản Google khác, dùng chung 1 file Google Sheets).
+// Chưa dùng máy chủ nào thì để trống chuỗi ('') của dòng đó.
 const API_URLS = [
-  'https://script.google.com/macros/s/AKfycbw91d2hgzGhBHhZ2FScgTBpGpfrxNacngrBAatDyGw0cXS7d1Oai8_29b7f8r0WXsUEPg/exec',   // CHÍNH
-  'https://script.google.com/macros/s/AKfycbwHPPbByOYEwuXNKYqBjxGnAnjuiUwpVgwQgk-r77KEdgPk6Df_uhtG9Y1CC9GEgaXLVQ/exec'    // DỰ PHÒNG
+  'https://script.google.com/macros/s/AKfycbw91d2hgzGhBHhZ2FScgTBpGpfrxNacngrBAatDyGw0cXS7d1Oai8_29b7f8r0WXsUEPg/exec',   // MÁY 1 - CHÍNH
+  'https://script.google.com/macros/s/AKfycbwHPPbByOYEwuXNKYqBjxGnAnjuiUwpVgwQgk-r77KEdgPk6Df_uhtG9Y1CC9GEgaXLVQ/exec',   // MÁY 2 - DỰ PHÒNG 1
+  ''                                                                                                                      // MÁY 3 - DỰ PHÒNG 2 (dán URL /exec của script thứ 3 vào đây)
 ];
 const SERVERS = API_URLS.filter(function (u) { return u; });
+
+// ===== MỖI TÀI KHOẢN ƯU TIÊN 1 MÁY CHỦ (chia tải giờ cao điểm) =====
+// Tên tài khoản (viết thường, đúng như cột USERNAME ở sheet USERS) -> số thứ tự máy chủ ưu tiên:
+//   0 = máy 1 (chính), 1 = máy 2 (dự phòng 1), 2 = máy 3 (dự phòng 2)
+// Tài khoản không có trong bảng này sẽ dùng máy 1. Máy ưu tiên lỗi thì tự chuyển sang máy kế tiếp.
+const USER_SERVER = {
+  'user1': 0,
+  'user2': 1,
+  'user3': 2
+};
+function preferredIdx(user) {
+  const i = USER_SERVER[String(user || '').toLowerCase()];
+  return (i >= 0 && i < SERVERS.length) ? i : 0;
+}
 // ==========================================================
 
 // Bật = true nếu muốn máy đọc thành tiếng "Trùng suất ăn" / "Không có nhân viên"
@@ -224,9 +239,12 @@ let okCount = 0;
 let lastTick = 0;
 let audioCtx = null;
 let camListenersAdded = false;
-let activeIdx = 0;          // máy chủ đang dùng: 0 = chính, 1 = dự phòng
-let primaryOkStreak = 0;     // số lần ping liên tiếp máy chủ chính trả lời tốt
-const srvWhy = {};           // lý do máy chủ i đang lỗi (hiện dưới tên người dùng để biết vì sao dùng máy dự phòng)
+let activeIdx = 0;          // máy chủ đang dùng (số thứ tự trong SERVERS)
+let primaryOkStreak = 0;     // số lần ping liên tiếp máy chủ ưu tiên trả lời tốt
+const srvWhy = {};           // lý do máy chủ i đang lỗi (hiện dưới tên người dùng để biết vì sao dùng máy khác)
+
+// Tên hiển thị của máy chủ theo số thứ tự
+function srvName(i) { return i === 0 ? 'chính' : ('dự phòng ' + i); }
 
 // Dịch lỗi kỹ thuật thành lời dễ hiểu
 function describeErr(e) {
@@ -321,7 +339,9 @@ function resumeSession() {
         exp: Date.now() + life * 1000 - 60000
       };
       localStorage.setItem(AUTH_KEY, JSON.stringify(a));
-      if (!a.tokens[activeIdx]) activeIdx = a.tokens.map(function (t) { return !!t; }).indexOf(true);
+      // Ưu tiên máy chủ riêng của tài khoản này; nếu máy đó chưa có phiên thì lấy máy đầu tiên có phiên
+      const pi = preferredIdx(a.user);
+      activeIdx = a.tokens[pi] ? pi : a.tokens.map(function (t) { return !!t; }).indexOf(true);
       return a;
     })
     .then(function (a) { resuming = null; return a; }, function () { resuming = null; return null; });
@@ -349,6 +369,8 @@ function applyAuth() {
     box.style.display = 'none';
     rbox.style.display = 'none';
     document.getElementById('userName').textContent = '👤 ' + (a.name || a.user);
+    const pi = preferredIdx(a.user);                          // máy chủ ưu tiên của tài khoản này
+    if (a.tokens && a.tokens[pi]) activeIdx = pi;
     renderServer();
     return;
   }
@@ -406,7 +428,11 @@ function doLogin() {
         } else {
           localStorage.removeItem(DEVICE_KEY);
         }
-        activeIdx = results.map(function (r) { return !!(r && r.ok); }).indexOf(true); // ưu tiên máy chủ đăng nhập được
+        // Ưu tiên máy chủ riêng của tài khoản; nếu máy đó đăng nhập lỗi thì lấy máy đầu tiên đăng nhập được
+        const pi = preferredIdx(good[0].user);
+        activeIdx = (results[pi] && results[pi].ok)
+          ? pi
+          : results.map(function (r) { return !!(r && r.ok); }).indexOf(true);
         applyAuth();
       } else {
         const real = results.filter(function (r) { return r && !r.net; })[0] || results[0];
@@ -496,15 +522,15 @@ function tick(ts) {
   requestAnimationFrame(tick);
 
   if (video.paused) video.play().catch(function () {});
-  if (busy || ts - lastTick < 120) return; // quét ~8 lần/giây
+  if (busy || ts - lastTick < 80) return; // quét ~12 lần/giây
   lastTick = ts;
   if (video.readyState !== video.HAVE_ENOUGH_DATA) return;
 
-  // Cắt vùng vuông ở giữa khung hình, giữ độ phân giải cao để đọc mã QR dày
+  // Cắt vùng vuông ở giữa khung hình; thu nhỏ còn tối đa 640px để jsQR xử lý nhanh hơn
   const vw = video.videoWidth, vh = video.videoHeight;
   const side = Math.floor(Math.min(vw, vh) * 0.85);
   const sx = Math.floor((vw - side) / 2), sy = Math.floor((vh - side) / 2);
-  const out = Math.min(side, 900);
+  const out = Math.min(side, 640);
   canvas.width = out; canvas.height = out;
   ctx.drawImage(video, sx, sy, side, side, 0, 0, out, out);
 
@@ -556,7 +582,7 @@ function vnTime() {
 // Quét 1 thẻ -> khóa camera -> chờ máy chủ -> hiện màn hình kết quả đủ lâu -> mới quét thẻ kế tiếp
 // Sau khi trả kết quả, màn hình kết quả hiện trong khoảng thời gian dưới đây rồi TỰ quay lại camera để quét thẻ kế tiếp
 // (có thể chạm vào màn hình để quay lại sớm hơn). Đơn vị: mili-giây (1000 = 1 giây)
-const RESULT_HOLD_MS = { ok: 1000, warn: 1000, err: 1000 };   // 1000 = 1 giây, tự ẩn, nhân viên không cần bấm
+const RESULT_HOLD_MS = { ok: 700, warn: 1000, err: 1000 };   // tự ẩn, nhân viên không cần bấm
 
 const pending = {};          // MSNV đang chờ máy chủ trả lời (tối đa 1)
 let blockedCode = '';        // thẻ vừa xử lý: phải rời khỏi khung hình rồi mới quét lại được
@@ -643,21 +669,21 @@ function handleCode(text) {
     })
     .catch(function (err) {
       delete pending[msnv]; updatePending();
-      onResult(label, { ok: false, message: (SERVERS.length > 1 ? 'Cả hai máy chủ đều lỗi. ' : '') +
+      onResult(label, { ok: false, message: (SERVERS.length > 1 ? 'Tất cả máy chủ đều lỗi. ' : '') +
         'Lỗi kết nối: ' + (err && err.message ? err.message : err) }, li, Date.now() - started);
     });
 }
 
 // ===== CHUYỂN MÁY CHỦ DỰ PHÒNG =====
-// Thử máy chủ đang dùng; nếu mất kết nối / quá thời gian / trả về lỗi không phải dữ liệu (ví dụ hết hạn mức)
-// thì chuyển sang máy chủ kế tiếp. Dữ liệu luôn nằm ở CÙNG một file Google Sheets nên kiểm tra trùng vẫn đúng.
+// Thử máy chủ đang dùng (máy ưu tiên của tài khoản); nếu mất kết nối / quá thời gian / trả về lỗi không phải dữ liệu
+// (ví dụ hết hạn mức) thì chuyển sang máy chủ kế tiếp. Dữ liệu luôn nằm ở CÙNG một file Google Sheets nên kiểm tra trùng vẫn đúng.
 // KHÔNG chuyển máy khi máy chủ trả lời bình thường (kể cả "Trùng", "Không tìm thấy nhân viên", "Hệ thống đang bận").
 const TIMEOUT_FIRST_MS = 12000;   // máy chủ không phải cuối: chờ tối đa 12 giây rồi chuyển máy
 const TIMEOUT_LAST_MS = 25000;    // máy chủ cuối cùng: chờ tối đa 25 giây
 
 function recordOn(i, q, cur, isLast) {
   const tok = cur.tokens && cur.tokens[i];
-  if (!tok) return Promise.reject(new Error('Chưa đăng nhập máy chủ ' + (i === 0 ? 'chính' : 'dự phòng')));
+  if (!tok) return Promise.reject(new Error('Chưa đăng nhập máy chủ ' + srvName(i)));
   const ctrl = new AbortController();
   const timer = setTimeout(function () { ctrl.abort(); }, isLast ? TIMEOUT_LAST_MS : TIMEOUT_FIRST_MS);
   // _ = Date.now() và cache:'no-store' để trình duyệt KHÔNG dùng lại kết quả cũ
@@ -686,7 +712,7 @@ function tryRecord(q, cur) {
       srvWhy[i] = '';
       if (i !== activeIdx) {
         activeIdx = i; renderServer();
-        notice(i === 0 ? '✓ Đã quay về máy chủ chính' : '⚠ Đã chuyển sang máy chủ dự phòng', 3000);
+        notice(i === preferredIdx(cur.user) ? '✓ Đã quay về máy chủ ưu tiên' : '⚠ Đã chuyển sang máy chủ dự phòng', 3000);
       }
       renderServer();
       return res;
@@ -702,11 +728,17 @@ function tryRecord(q, cur) {
 
 function renderServer() {
   const el = document.getElementById('srvInfo');
-  if (el) el.textContent = (SERVERS.length > 1 && activeIdx > 0) ? '⚠ Đang dùng máy chủ DỰ PHÒNG' : '';
+  const a = loadAuth();
+  const pi = a ? preferredIdx(a.user) : 0;
+  if (el) {
+    el.textContent = SERVERS.length > 1
+      ? (activeIdx !== pi ? '⚠ Đang dùng máy chủ DỰ PHÒNG (máy ' + (activeIdx + 1) + ')' : '• Máy ' + (activeIdx + 1))
+      : '';
+  }
   const why = document.getElementById('srvWhy');
   if (why) {
     const msgs = [];
-    SERVERS.forEach(function (u, i) { if (srvWhy[i]) msgs.push((i === 0 ? 'Máy chủ chính' : 'Máy chủ dự phòng') + ': ' + srvWhy[i]); });
+    SERVERS.forEach(function (u, i) { if (srvWhy[i]) msgs.push('Máy chủ ' + srvName(i) + ': ' + srvWhy[i]); });
     why.textContent = msgs.join('  |  ');
     why.style.display = msgs.length ? 'block' : 'none';
   }
@@ -756,21 +788,25 @@ function onResult(msnv, res, li, ms) {
 }
 
 // Gọi nhẹ lên các máy chủ định kỳ để Apps Script không bị "nguội" (khởi động lại rất chậm)
-// Nếu đang dùng máy chủ dự phòng và máy chủ chính đã trả lời tốt 2 lần liên tiếp (~4-8 phút) -> quay về máy chủ chính
+// Nếu đang dùng máy khác với máy ưu tiên của tài khoản và máy ưu tiên đã trả lời tốt 2 lần liên tiếp (~4-8 phút) -> quay về máy ưu tiên
 function ping() {
   SERVERS.forEach(function (url, i) {
     fetch(url + '?action=ping&_=' + Date.now(), { cache: 'no-store' })
       .then(function (r) { return r.json(); })
       .then(function (j) {
-        if (i !== 0) return;
-        primaryOkStreak = (j && j.ok) ? primaryOkStreak + 1 : 0;
         const a = loadAuth();
-        if (primaryOkStreak >= 2 && activeIdx !== 0 && !busy) {
-          if (a && a.tokens && a.tokens[0]) { activeIdx = 0; renderServer(); }
-          else if (a) { srvWhy[0] = 'đã hoạt động lại - hãy bấm Đăng xuất rồi đăng nhập lại để dùng lại máy chủ chính'; renderServer(); }
+        const pi = a ? preferredIdx(a.user) : 0;
+        if (i !== pi) return;                      // chỉ theo dõi máy ưu tiên của tài khoản này
+        primaryOkStreak = (j && j.ok) ? primaryOkStreak + 1 : 0;
+        if (primaryOkStreak >= 2 && activeIdx !== pi && !busy) {
+          if (a && a.tokens && a.tokens[pi]) { activeIdx = pi; renderServer(); }
+          else if (a) { srvWhy[pi] = 'đã hoạt động lại - hãy bấm Đăng xuất rồi đăng nhập lại để dùng lại máy này'; renderServer(); }
         }
       })
-      .catch(function () { if (i === 0) primaryOkStreak = 0; });
+      .catch(function () {
+        const a = loadAuth();
+        if (i === (a ? preferredIdx(a.user) : 0)) primaryOkStreak = 0;
+      });
   });
 }
 ping();
