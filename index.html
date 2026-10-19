@@ -127,6 +127,7 @@
     .lcard .remember { display:flex; align-items:center; gap:10px; margin:2px 0 16px; font-size:14px; color:#ccc; cursor:pointer; }
     .lcard .remember input { width:20px; height:20px; padding:0; margin:0; flex:none; }
     #loginErr { color:#ff8a80; font-size:14px; min-height:20px; margin-top:10px; text-align:center; }
+    #srvWhy { display:none; font-size:12px; color:#fbbc04; margin:-2px 0 8px; line-height:1.4; }
     .userbar { display:flex; justify-content:space-between; align-items:center; font-size:13px; color:#aaa; margin-bottom:8px; }
     .userbar button { background:#333; font-size:13px; padding:6px 12px; border-radius:8px; }
   </style>
@@ -153,6 +154,7 @@
 
 <div class="wrap">
   <div class="userbar"><span><span id="userName"></span> <span id="srvInfo" style="color:#fbbc04"></span></span><button onclick="doLogout()">Đăng xuất</button></div>
+  <div id="srvWhy"></div>
 
   <div class="top">
     <h1>🍚 QUÉT SUẤT ĂN</h1>
@@ -201,7 +203,7 @@
 // Chưa dùng dự phòng thì để trống dòng thứ hai ('').
 const API_URLS = [
   'https://script.google.com/macros/s/AKfycbw91d2hgzGhBHhZ2FScgTBpGpfrxNacngrBAatDyGw0cXS7d1Oai8_29b7f8r0WXsUEPg/exec',   // CHÍNH
-  'https://script.google.com/macros/s/AKfycbwHPPbByOYEwuXNKYqBjxGnAnjuiUwpVgwQgk-r77KEdgPk6Df_uhtG9Y1CC9GEgaXLVQ/exec',    //DỰ PHÒNG                                                                                                              
+  'https://script.google.com/macros/s/AKfycbwHPPbByOYEwuXNKYqBjxGnAnjuiUwpVgwQgk-r77KEdgPk6Df_uhtG9Y1CC9GEgaXLVQ/exec'    // DỰ PHÒNG
 ];
 const SERVERS = API_URLS.filter(function (u) { return u; });
 // ==========================================================
@@ -224,6 +226,17 @@ let audioCtx = null;
 let camListenersAdded = false;
 let activeIdx = 0;          // máy chủ đang dùng: 0 = chính, 1 = dự phòng
 let primaryOkStreak = 0;     // số lần ping liên tiếp máy chủ chính trả lời tốt
+const srvWhy = {};           // lý do máy chủ i đang lỗi (hiện dưới tên người dùng để biết vì sao dùng máy dự phòng)
+
+// Dịch lỗi kỹ thuật thành lời dễ hiểu
+function describeErr(e) {
+  const m = String((e && e.message) || e || '');
+  if (/abort/i.test(m)) return 'quá ' + (TIMEOUT_FIRST_MS / 1000) + ' giây không trả lời';
+  if (/JSON|Unexpected token|DOCTYPE/i.test(m)) return 'trả về trang lỗi thay vì dữ liệu (thường do chưa cấp quyền cho script, hết hạn mức hoặc sai quyền truy cập Web App)';
+  if (/Failed to fetch|NetworkError|Load failed/i.test(m)) return 'không kết nối được';
+  if (/Chưa đăng nhập máy chủ/.test(m)) return 'chưa đăng nhập được máy chủ này (lúc đăng nhập máy này bị lỗi)';
+  return m;
+}
 
 const SAME_CODE_COOLDOWN = 4000; // ms: bỏ qua cùng 1 mã quét lặp lại liên tục
 
@@ -372,10 +385,13 @@ function doLogin() {
       body: JSON.stringify({ action: 'login', username: u, password: p, remember: remember })
     })
       .then(function (r) { return r.json(); })
-      .catch(function (e) { return { ok: false, net: true, message: 'Lỗi kết nối: ' + (e && e.message ? e.message : e) }; });
+      .catch(function (e) { return { ok: false, net: true, why: describeErr(e), message: 'Lỗi kết nối: ' + (e && e.message ? e.message : e) }; });
   }))
     .then(function (results) {
       const good = results.filter(function (r) { return r && r.ok; });
+      results.forEach(function (r, i) {      // máy chủ nào đăng nhập lỗi thì ghi lý do để hiển thị
+        srvWhy[i] = (r && r.ok) ? '' : 'đăng nhập lỗi: ' + (r && r.net ? r.why : (r && r.message) || '');
+      });
       if (good.length) {
         const life = Math.min.apply(null, good.map(function (r) { return r.expiresIn || 21600; }));
         localStorage.setItem(AUTH_KEY, JSON.stringify({
@@ -666,14 +682,18 @@ function tryRecord(q, cur) {
     }
     const i = order[k];
     return recordOn(i, q, cur, k === order.length - 1).then(function (res) {
-      if (res && res.auth === false) { lastAuth = res; return attempt(k + 1); }  // phiên hết hạn ở máy này, thử máy kia
+      if (res && res.auth === false) { lastAuth = res; srvWhy[i] = 'phiên đăng nhập hết hạn ở máy này'; renderServer(); return attempt(k + 1); }  // thử máy kia
+      srvWhy[i] = '';
       if (i !== activeIdx) {
         activeIdx = i; renderServer();
         notice(i === 0 ? '✓ Đã quay về máy chủ chính' : '⚠ Đã chuyển sang máy chủ dự phòng', 3000);
       }
+      renderServer();
       return res;
     }, function (e) {
       lastErr = e;
+      srvWhy[i] = describeErr(e);
+      renderServer();
       return attempt(k + 1);
     });
   }
@@ -683,6 +703,13 @@ function tryRecord(q, cur) {
 function renderServer() {
   const el = document.getElementById('srvInfo');
   if (el) el.textContent = (SERVERS.length > 1 && activeIdx > 0) ? '⚠ Đang dùng máy chủ DỰ PHÒNG' : '';
+  const why = document.getElementById('srvWhy');
+  if (why) {
+    const msgs = [];
+    SERVERS.forEach(function (u, i) { if (srvWhy[i]) msgs.push((i === 0 ? 'Máy chủ chính' : 'Máy chủ dự phòng') + ': ' + srvWhy[i]); });
+    why.textContent = msgs.join('  |  ');
+    why.style.display = msgs.length ? 'block' : 'none';
+  }
 }
 
 function onResult(msnv, res, li, ms) {
@@ -737,7 +764,11 @@ function ping() {
       .then(function (j) {
         if (i !== 0) return;
         primaryOkStreak = (j && j.ok) ? primaryOkStreak + 1 : 0;
-        if (primaryOkStreak >= 2 && activeIdx !== 0 && !busy) { activeIdx = 0; renderServer(); }
+        const a = loadAuth();
+        if (primaryOkStreak >= 2 && activeIdx !== 0 && !busy) {
+          if (a && a.tokens && a.tokens[0]) { activeIdx = 0; renderServer(); }
+          else if (a) { srvWhy[0] = 'đã hoạt động lại - hãy bấm Đăng xuất rồi đăng nhập lại để dùng lại máy chủ chính'; renderServer(); }
+        }
       })
       .catch(function () { if (i === 0) primaryOkStreak = 0; });
   });
