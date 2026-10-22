@@ -665,6 +665,7 @@ function handleCode(text) {
     })
     .then(function (res) {
       delete pending[msnv]; updatePending();
+      li.dataset.srv = (res && res.ms != null) ? res.ms : '';
       onResult(label, res, li, Date.now() - started);
     })
     .catch(function (err) {
@@ -861,7 +862,7 @@ function fillHistory(li, type, name, msnv, unit, ms) {
   const time = li.dataset.time || (li.dataset.time = vnTime());
   const labels = { load: '⏳ Đang ghi nhận...', ok: '✓ Đã ghi nhận', warn: '⚠ Trùng', err: '✕ Lỗi' };
   li.children[0].textContent = name + ' (' + msnv + (unit ? ' - ' + unit : '') + ') • ' + time;
-  li.children[1].textContent = labels[type] + (ms != null ? ' (' + (ms / 1000).toFixed(1) + 's)' : '');
+  li.children[1].textContent = labels[type] + (ms != null ? ' (' + (ms / 1000).toFixed(1) + 's' + (li.dataset.srv ? ' / máy chủ ' + (li.dataset.srv / 1000).toFixed(1) + 's' : '') + ')' : '');
   li.children[1].className = 't-' + type;
 }
 
