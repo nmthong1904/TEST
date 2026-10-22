@@ -1,6 +1,8 @@
 <!DOCTYPE html>
 <html>
 <head>
+  <link rel="preconnect" href="https://script.google.com">
+  <link rel="preconnect" href="https://script.googleusercontent.com">
   <base target="_top">
   <meta name="viewport" content="width=device-width, initial-scale=1">
 
@@ -679,7 +681,7 @@ function handleCode(text) {
 // Thử máy chủ đang dùng (máy ưu tiên của tài khoản); nếu mất kết nối / quá thời gian / trả về lỗi không phải dữ liệu
 // (ví dụ hết hạn mức) thì chuyển sang máy chủ kế tiếp. Dữ liệu luôn nằm ở CÙNG một file Google Sheets nên kiểm tra trùng vẫn đúng.
 // KHÔNG chuyển máy khi máy chủ trả lời bình thường (kể cả "Trùng", "Không tìm thấy nhân viên", "Hệ thống đang bận").
-const TIMEOUT_FIRST_MS = 12000;   // máy chủ không phải cuối: chờ tối đa 12 giây rồi chuyển máy
+const TIMEOUT_FIRST_MS = 6000;   // máy chủ không phải cuối: chờ tối đa 12 giây rồi chuyển máy
 const TIMEOUT_LAST_MS = 25000;    // máy chủ cuối cùng: chờ tối đa 25 giây
 
 function recordOn(i, q, cur, isLast) {
